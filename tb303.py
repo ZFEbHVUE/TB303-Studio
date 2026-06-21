@@ -192,23 +192,23 @@ class TB303:
         fc = np.clip(fc, 20.0, 0.45 * sr)
         g = 1.0 - np.exp(-2.0 * np.pi * fc / sr)
 
-        # --- filtre 4 poles (ladder) + VCA (boucle echantillon) ---
-        res_amt = resonance * 4.3            # contre-reaction : pic resonant -> quasi auto-oscillation
+        # --- filtre type 303 : ladder 4 etages, sortie au 3e pole (~18 dB/oct,
+        #     plus lumineux que le Moog 24 dB), contre-reaction depuis le 4e pole ---
+        res_amt = resonance * 4.2            # pic resonant -> friser l'auto-oscillation
         s1 = s2 = s3 = s4 = ae = 0.0
         a_atk = 1.0 - math.exp(-1.0 / (sr * 0.003))
         a_rel = 1.0 - math.exp(-1.0 / (sr * 0.008))
         out = np.empty(N)
         for i in range(N):
             gi = g[i]
-            inp = osc[i] - res_amt * s4       # contre-reaction depuis le 4e pole (180 deg)
-            inp = math.tanh(inp)              # saturation douce : borne sans ecraser -> la resonance monte
+            inp = math.tanh(osc[i] - res_amt * s4)   # saturation entree+contre-reaction (4e pole)
             s1 += gi * (inp - s1)
             s2 += gi * (s1 - s2)
             s3 += gi * (s2 - s3)
             s4 += gi * (s3 - s4)
             target = gate[i] * (1.0 + accent_amp[i] * 0.8)
             ae += (a_atk if target > ae else a_rel) * (target - ae)
-            out[i] = s4 * 2.3 * ae            # 4-pole plus sombre -> gain compense
+            out[i] = s3 * 1.9 * ae           # sortie 3e pole = 18 dB/oct (grain 303)
 
         if distortion > 0:
             drive = 1.0 + distortion * 20.0

@@ -115,6 +115,17 @@ class SkinStudio:
         self.cv.bind("<MouseWheel>", self._wheel)
         self.cv.bind("<Button-4>", self._wheel)
         self.cv.bind("<Button-5>", self._wheel)
+        # --- menu Fichier : projet .tb303 (etat complet) + export WAV ---
+        menubar = tk.Menu(root)
+        filem = tk.Menu(menubar, tearoff=0)
+        filem.add_command(label="Ouvrir projet\u2026   (Ctrl+O)", command=self._load_project)
+        filem.add_command(label="Sauvegarder projet\u2026   (Ctrl+S)", command=self._save_project)
+        filem.add_separator()
+        filem.add_command(label="Exporter WAV\u2026", command=self._save)
+        menubar.add_cascade(label="Fichier", menu=filem)
+        root.config(menu=menubar)
+        root.bind("<Control-s>", lambda e: self._save_project())
+        root.bind("<Control-o>", lambda e: self._load_project())
         self._apply_preset("Classic Bass")
         self.refresh()
 
@@ -403,6 +414,70 @@ class SkinStudio:
                                             filetypes=[("WAV", "*.wav")], initialfile="tb303.wav")
         if path:
             self.tb.write_wav(self._render(4), path)
+
+    # ---------- projet .tb303 (etat complet, rappelable) ----------
+    def _project_state(self):
+        self.banks[self.cur_bank] = [dict(s) for s in self.steps]   # fige la banque courante
+        return {
+            "format": "tb303-studio", "version": 1,
+            "knobs": {k: round(float(v), 4) for k, v in self.kv.items()},
+            "waveform": self.waveform,
+            "scale": self.scale_v.get(),
+            "playmode": self.playmode_v.get(),
+            "preset": self.preset_v.get(),
+            "cur_bank": self.cur_bank,
+            "banks": [None if b is None else [dict(s) for s in b] for b in self.banks],
+        }
+
+    def _apply_project(self, st):
+        for k in self.kv:
+            if k in st.get("knobs", {}):
+                vmin, vmax = KNOB_SPEC[k][0], KNOB_SPEC[k][1]
+                self.kv[k] = min(vmax, max(vmin, float(st["knobs"][k])))
+        self.waveform = st.get("waveform", self.waveform)
+        self.scale_v.set(st.get("scale", self.scale_v.get()))
+        self.playmode_v.set(st.get("playmode", self.playmode_v.get()))
+        self.preset_v.set(st.get("preset", self.preset_v.get()))
+        banks = st.get("banks")
+        if banks and len(banks) == 8:
+            self.banks = [None if b is None else
+                          [{"note": s.get("note"), "accent": bool(s.get("accent")),
+                            "slide": bool(s.get("slide"))} for s in b] for b in banks]
+        self.cur_bank = int(st.get("cur_bank", 0)) % 8
+        if self.banks[self.cur_bank] is None:
+            self.banks[self.cur_bank] = [{"note": None, "accent": False, "slide": False}
+                                         for _ in range(16)]
+        self.steps = [dict(s) for s in self.banks[self.cur_bank]]
+        self.sel = 0
+        self.refresh()
+        if self.playing and self.audio_ok:
+            self._play_loop()
+
+    def _save_project(self):
+        path = filedialog.asksaveasfilename(
+            defaultextension=".tb303", filetypes=[("Projet TB-303", "*.tb303"), ("Tous", "*.*")],
+            initialfile="mon_pattern.tb303")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._project_state(), f, indent=1, ensure_ascii=False)
+        except Exception as e:
+            messagebox.showerror("Sauvegarde impossible", str(e))
+
+    def _load_project(self):
+        path = filedialog.askopenfilename(
+            filetypes=[("Projet TB-303", "*.tb303"), ("Tous", "*.*")])
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                st = json.load(f)
+            if st.get("format") != "tb303-studio":
+                raise ValueError("Ce fichier n'est pas un projet TB-303.")
+            self._apply_project(st)
+        except Exception as e:
+            messagebox.showerror("Ouverture impossible", str(e))
 
     def _clear(self):
         for s in self.steps:
