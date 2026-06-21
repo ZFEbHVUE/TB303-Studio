@@ -192,27 +192,23 @@ class TB303:
         fc = np.clip(fc, 20.0, 0.45 * sr)
         g = 1.0 - np.exp(-2.0 * np.pi * fc / sr)
 
-        # --- filtre 3 poles + VCA (boucle echantillon) ---
-        res_amt = resonance * 4.2
-        s1 = s2 = s3 = ae = 0.0
+        # --- filtre 4 poles (ladder) + VCA (boucle echantillon) ---
+        res_amt = resonance * 4.3            # contre-reaction : pic resonant -> quasi auto-oscillation
+        s1 = s2 = s3 = s4 = ae = 0.0
         a_atk = 1.0 - math.exp(-1.0 / (sr * 0.003))
         a_rel = 1.0 - math.exp(-1.0 / (sr * 0.008))
         out = np.empty(N)
         for i in range(N):
             gi = g[i]
-            inp = osc[i] - res_amt * s3
-            if inp > 1.0:
-                inp = 0.6667
-            elif inp < -1.0:
-                inp = -0.6667
-            else:
-                inp = inp - inp * inp * inp * 0.3333
+            inp = osc[i] - res_amt * s4       # contre-reaction depuis le 4e pole (180 deg)
+            inp = math.tanh(inp)              # saturation douce : borne sans ecraser -> la resonance monte
             s1 += gi * (inp - s1)
             s2 += gi * (s1 - s2)
             s3 += gi * (s2 - s3)
+            s4 += gi * (s3 - s4)
             target = gate[i] * (1.0 + accent_amp[i] * 0.8)
             ae += (a_atk if target > ae else a_rel) * (target - ae)
-            out[i] = s3 * 1.5 * ae
+            out[i] = s4 * 2.3 * ae            # 4-pole plus sombre -> gain compense
 
         if distortion > 0:
             drive = 1.0 + distortion * 20.0
@@ -222,9 +218,11 @@ class TB303:
         out = out / peak * 0.9
         return np.stack([out, out], axis=1)
 
-    def write_wav(self, audio, path, peak=0.95):
-        m = np.max(np.abs(audio)) or 1.0
-        data = (audio / m * peak * 32767.0).astype(np.int16)
+    def write_wav(self, audio, path, peak=0.95, normalize=False):
+        if normalize:
+            m = np.max(np.abs(audio)) or 1.0
+            audio = audio / m * peak
+        data = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
         ch = 2 if audio.ndim == 2 else 1
         with wave.open(path, "w") as w:
             w.setnchannels(ch)

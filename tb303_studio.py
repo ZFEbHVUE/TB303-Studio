@@ -1,150 +1,134 @@
 #!/usr/bin/env python3
 """
-tb303_studio.py — GUI style TB-303 pour le moteur tb303.py.
+tb303_studio.py — GUI "skinnee" : habillage = image (tb303_skin.png),
+controles fonctionnels superposes aux coordonnees relevees sur tes reperes rouges.
 
-Knobs : Tuning, Cut Off, Resonance, Env Mod, Decay, Accent | Tempo, Distortion,
-Volume, Shuffle (swing). Selecteurs Scale (subdivision) et Play Mode.
-Clavier piano + colonnes Accent/Slide/Octave. 16 pas. 8 banques de patterns.
-
-Necessite tb303.py (meme dossier), numpy, pygame (optionnel : lecture).
+Va avec tb303.py et tb303_skin.png (meme dossier).
+numpy + Pillow requis ; pygame optionnel (lecture temps reel).
 Lancement : python tb303_studio.py
 """
-
-import math
+import sys, os, json, math
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-
 from tb303 import TB303, DEMO_PATTERN, parse_step
-
+try:
+    from PIL import Image, ImageTk
+    _HAS_PIL = True
+except Exception:
+    _HAS_PIL = False
 try:
     import pygame
     _HAS_PYGAME = True
 except Exception:
     _HAS_PYGAME = False
 
-BG = "#c9ccce"
-PANEL = "#bfc3c6"
-DARK = "#2b2b2b"
-ACID = "#ff8c1a"
-RED = "#cc2222"
-BLUE = "#1e6fce"
-SEL = "#ffd24d"
-BANK_ON = "#ff8c1a"
-
 SCALE_MAP = {"1/8": 2, "1/8T": 3, "1/16": 4, "1/16T": 6, "1/32": 8}
 PLAYMODES = {"Forward": "forward", "Reverse": "reverse", "Fwd&Rev": "fwd_rev",
              "Invert": "invert", "Random": "random"}
+PRESETS = {
+    "Classic Bass": {"waveform": "square", "cutoff": 0.40, "resonance": 0.10,
+                     "env_mod": 0.12, "decay": 0.40, "accent": 0.30, "distortion": 0.0, "shuffle": 0.0},
+    "Acid":         {"waveform": "saw", "cutoff": 0.30, "resonance": 0.84,
+                     "env_mod": 0.65, "decay": 0.55, "accent": 0.70, "distortion": 0.28, "shuffle": 0.0},
+    "Sub Bass":     {"waveform": "square", "cutoff": 0.24, "resonance": 0.06,
+                     "env_mod": 0.06, "decay": 0.55, "accent": 0.30, "distortion": 0.0, "shuffle": 0.0},
+    "Rubber":       {"waveform": "saw", "cutoff": 0.36, "resonance": 0.45,
+                     "env_mod": 0.35, "decay": 0.45, "accent": 0.45, "distortion": 0.0, "shuffle": 0.0},
+}
+KNOB_SPEC = {
+    "tuning": (400, 480, 440, "{:.0f}"), "cutoff": (0, 1, 0.40, "{:.2f}"),
+    "resonance": (0, 1, 0.10, "{:.2f}"), "env_mod": (0, 1, 0.12, "{:.2f}"),
+    "decay": (0, 1, 0.40, "{:.2f}"), "accent": (0, 1, 0.30, "{:.2f}"),
+    "bpm": (60, 200, 130, "{:.0f}"), "distortion": (0, 1, 0.0, "{:.2f}"),
+    "volume": (0, 1, 0.9, "{:.2f}"), "shuffle": (0, 0.66, 0.0, "{:.2f}"),
+}
+
+# Carte des coordonnees (pixels image native) relevee sur les reperes rouges
+SKIN_MAP = {
+    "knobs": {
+        "tuning": [277, 105, 44, 280, 191], "cutoff": [386, 105, 44, 386, 190],
+        "resonance": [496, 104, 44, 495, 191], "env_mod": [605, 105, 44, 604, 190],
+        "decay": [713, 104, 44, 713, 190], "accent": [814, 105, 44, 814, 189],
+        "bpm": [131, 264, 40, 134, 344], "distortion": [237, 263, 40, 238, 344],
+        "volume": [340, 264, 40, 340, 343], "shuffle": [443, 265, 40, 446, 343],
+    },
+    "waveform": {"saw": [93, 108], "square": [93, 151]},
+    "combos": {"scale": [599, 312, 109], "playmode": [738, 313, 141], "preset": [910, 314, 178]},
+    "banks": [1086, 1162, 1238, 1314, 1390, 1466, 1542, 1618], "banks_y": 321,
+    "buttons": {
+        "run": [148, 437, 55, 33], "stop": [149, 542, 54, 31],
+        "accent": [1074, 461, 44, 16], "slide": [1234, 461, 37, 15],
+        "oct_down": [1379, 461, 35, 14], "oct_up": [1512, 462, 36, 14], "rest": [1646, 461, 32, 14],
+        "save": [455, 728, 63, 16], "clear": [629, 729, 46, 17], "demo": [783, 728, 43, 17],
+    },
+    "piano": [259, 394, 986, 545],
+    "cells": {"cx": [401, 474, 548, 622, 696, 769, 843, 917, 993, 1068, 1142, 1217,
+                     1292, 1367, 1447, 1525], "cy": 602, "hw": 32, "hh": 28},
+    "status": [880, 728], "show_values": True,
+    "ink": "#241a0a", "needle": "#ffcf6b", "accent_fg": "#c0451f", "slide_fg": "#3f7fa0",
+    "val_fg": "#f0d9a0", "sel": "#ffcf6b",
+}
 
 
-class Knob(tk.Canvas):
-    def __init__(self, master, label, vmin, vmax, value, command=None,
-                 fmt="{:.2f}", size=52):
-        super().__init__(master, width=size, height=size + 26, bg=BG, highlightthickness=0)
-        self.label, self.vmin, self.vmax = label, vmin, vmax
-        self.value, self.command, self.fmt, self.size = value, command, fmt, size
-        self._default, self._last_y = value, 0
-        self.bind("<Button-1>", lambda e: setattr(self, "_last_y", e.y))
-        self.bind("<B1-Motion>", self._drag)
-        self.bind("<Double-Button-1>", lambda e: self._set(self._default))
-        self._draw()
-
-    def _draw(self):
-        self.delete("all")
-        s = self.size
-        c = s / 2
-        r = s / 2 - 5
-        self.create_oval(c - r, c - r, c + r, c + r, fill=DARK, outline="#000", width=2)
-        frac = (self.value - self.vmin) / (self.vmax - self.vmin)
-        a = math.radians(135 + frac * 270)
-        self.create_line(c, c, c + (r - 4) * math.cos(a), c + (r - 4) * math.sin(a),
-                         fill=ACID, width=3, capstyle="round")
-        self.create_text(c, s + 6, text=self.label, font=("TkDefaultFont", 7, "bold"))
-        self.create_text(c, s + 17, text=self.fmt.format(self.value), font=("TkDefaultFont", 7))
-
-    def _drag(self, e):
-        dy = e.y - self._last_y
-        self._last_y = e.y
-        self._set(self.value - dy * (self.vmax - self.vmin) / 150.0)
-
-    def _set(self, v):
-        self.value = min(self.vmax, max(self.vmin, v))
-        self._draw()
-        if self.command:
-            self.command(self.value)
-
-    def get(self):
-        return self.value
-
-
-class Piano(tk.Canvas):
-    BLACK_AFTER = {0: "C#", 1: "D#", 3: "F#", 4: "G#", 5: "A#"}
-
-    def __init__(self, master, octaves=(1, 2, 3), command=None, kw=21, kh=82):
-        self.kw, self.kh, self.command = kw, kh, command
-        self.whites = [(w, o) for o in octaves for w in ["C", "D", "E", "F", "G", "A", "B"]]
-        super().__init__(master, width=len(self.whites) * kw, height=kh,
-                         bg=BG, highlightthickness=0)
-        self._rects = []
-        self._draw()
-        self.bind("<Button-1>", self._click)
-
-    def _draw(self):
-        self.delete("all")
-        self._rects = []
-        kw, kh = self.kw, self.kh
-        for i, (n, o) in enumerate(self.whites):
-            x0 = i * kw
-            self.create_rectangle(x0, 0, x0 + kw, kh, fill="#f4f4f4", outline="#555")
-            self._rects.append((x0, x0 + kw, 0, kh, f"{n}{o}", False))
-        for idx in range(len(self.whites) - 1):
-            local = idx % 7
-            if local in self.BLACK_AFTER:
-                o = self.whites[idx][1]
-                bw = kw * 0.62
-                x = (idx + 1) * kw - bw / 2
-                self.create_rectangle(x, 0, x + bw, kh * 0.6, fill=DARK, outline="#000")
-                self._rects.append((x, x + bw, 0, kh * 0.6, f"{self.BLACK_AFTER[local]}{o}", True))
-
-    def _click(self, e):
-        for x0, x1, y0, y1, name, black in self._rects:
-            if black and x0 <= e.x <= x1 and y0 <= e.y <= y1:
-                return self.command and self.command(name)
-        for x0, x1, y0, y1, name, black in self._rects:
-            if not black and x0 <= e.x <= x1 and y0 <= e.y <= y1:
-                return self.command and self.command(name)
-
-
-class TB303Studio:
+class SkinStudio:
     SR = 44100
 
-    def __init__(self, root):
+    def __init__(self, root, image_path):
+        if not _HAS_PIL:
+            raise SystemExit("Pillow requis : pip install pillow")
         self.root = root
         self.tb = TB303(self.SR)
-        self.playing = False
-        self.sel = 0
-        self.cur_bank = 0
-        self.banks = [None] * 8
-        self.audio_ok = self._init_audio()
+        self.M = SKIN_MAP
+        self.img = Image.open(image_path).convert("RGB")
+        self.IW, self.IH = self.img.size
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        self.scale = min(1.0, (sw - 30) / self.IW, (sh - 90) / self.IH)
+        disp = (self.img.resize((int(self.IW * self.scale), int(self.IH * self.scale)),
+                                Image.LANCZOS) if self.scale < 1 else self.img)
+        self.bg = ImageTk.PhotoImage(disp)
+        root.title("TB-303 Studio — " + os.path.basename(image_path))
+        root.resizable(False, False)
+        self.cv = tk.Canvas(root, width=disp.width, height=disp.height, highlightthickness=0)
+        self.cv.pack()
+        self.cv.create_image(0, 0, anchor="nw", image=self.bg)
+
+        self.kv = {k: KNOB_SPEC[k][2] for k in KNOB_SPEC}
+        self.waveform = "square"
+        self.scale_v = tk.StringVar(value="1/16")
+        self.playmode_v = tk.StringVar(value="Forward")
+        self.preset_v = tk.StringVar(value="Classic Bass")
         self.steps = []
         self._load_pattern(DEMO_PATTERN)
+        self.banks = [None] * 8
         self.banks[0] = [dict(s) for s in self.steps]
-        root.title("TB-303 Studio")
-        root.configure(bg=BG)
-        root.resizable(False, False)
-        self._build()
-        self._refresh_strip()
-        self._highlight_bank()
+        self.cur_bank = 0
+        self.sel = 0
+        self.playing = False
+        self._drag = None
+        self.audio_ok = self._init_audio()
+        self._presample_colors()
+        self._make_combos()
+        self.cv.bind("<Button-1>", self._click)
+        self.cv.bind("<B1-Motion>", self._motion)
+        self.cv.bind("<ButtonRelease-1>", lambda e: setattr(self, "_drag", None))
+        self.cv.bind("<MouseWheel>", self._wheel)
+        self.cv.bind("<Button-4>", self._wheel)
+        self.cv.bind("<Button-5>", self._wheel)
+        self._apply_preset("Classic Bass")
+        self.refresh()
 
-    def _init_audio(self):
-        if not _HAS_PYGAME:
-            return False
-        try:
-            pygame.mixer.quit()
-            pygame.mixer.init(frequency=self.SR, size=-16, channels=2)
-            return True
-        except Exception:
-            return False
+    def S(self, v):
+        return v * self.scale
+
+    def _sample_hex(self, x, y, k=9):
+        x0, y0 = max(0, x - k), max(0, y - k)
+        patch = np.asarray(self.img.crop((x0, y0, x + k, y + k))).reshape(-1, 3)
+        return "#%02x%02x%02x" % tuple(np.median(patch, axis=0).astype(int))
+
+    def _presample_colors(self):
+        self.valbg = {k: self._sample_hex(v[3], v[4], 13) for k, v in self.M["knobs"].items()}
+        self.statusbg = self._sample_hex(self.M["status"][0], self.M["status"][1], 14)
 
     def _load_pattern(self, pattern):
         self.steps = []
@@ -154,122 +138,177 @@ class TB303Studio:
         while len(self.steps) < 16:
             self.steps.append({"note": None, "accent": False, "slide": False})
 
-    # ---------------- UI ----------------
-    def _build(self):
-        top = tk.Frame(self.root, bg=BG, padx=10, pady=8)
-        top.grid(row=0, column=0, sticky="we")
-        self.waveform = tk.StringVar(value="saw")
-        wf = tk.Frame(top, bg=BG)
-        wf.grid(row=0, column=0, padx=(0, 8))
-        tk.Label(wf, text="WAVEFORM", bg=BG, font=("TkDefaultFont", 7, "bold")).pack()
-        for txt, val in [("\u25fb saw", "saw"), ("\u2293 sqr", "square")]:
-            ttk.Radiobutton(wf, text=txt, value=val, variable=self.waveform,
-                            command=self._changed).pack(anchor="w")
+    def _init_audio(self):
+        self.audio_err = ""
+        if not _HAS_PYGAME:
+            self.audio_err = "pygame absent — pip install pygame"
+            return False
+        # WSL/WSLg : router le son vers PulseAudio (sinon aucun peripherique audio)
+        if os.path.exists("/mnt/wslg/PulseServer"):
+            os.environ.setdefault("SDL_AUDIODRIVER", "pulseaudio")
+            os.environ["PULSE_SERVER"] = "unix:/mnt/wslg/PulseServer"  # ecrase une valeur stale
+        try:
+            pygame.mixer.quit()
+            pygame.mixer.init(frequency=self.SR, size=-16, channels=2)
+            return True
+        except Exception as e:
+            self.audio_err = f"audio KO ({e})"
+            return False
 
-        self.knobs = {}
-        row1 = [("tuning", "TUNING", 400, 480, 440, "{:.0f}"),
-                ("cutoff", "CUT OFF", 0, 1, 0.30, "{:.2f}"),
-                ("resonance", "RESONANCE", 0, 1, 0.82, "{:.2f}"),
-                ("env_mod", "ENV MOD", 0, 1, 0.62, "{:.2f}"),
-                ("decay", "DECAY", 0, 1, 0.50, "{:.2f}"),
-                ("accent", "ACCENT", 0, 1, 0.65, "{:.2f}")]
-        for i, (k, l, lo, hi, v, f) in enumerate(row1):
-            kn = Knob(top, l, lo, hi, v, command=lambda _v: self._changed(), fmt=f)
-            kn.grid(row=0, column=1 + i, padx=3)
-            self.knobs[k] = kn
-        tk.Label(top, text="BASS  LINE", bg=BG, fg=DARK,
-                 font=("TkDefaultFont", 14, "bold")).grid(row=0, column=8, padx=10)
+    def _make_combos(self):
+        try:
+            st = ttk.Style()
+            st.theme_use("clam")
+            st.configure("Skin.TCombobox", fieldbackground="#2a1c0e", background="#5a4326",
+                         foreground="#f0d9a0", arrowcolor="#f0d9a0")
+            st.map("Skin.TCombobox", fieldbackground=[("readonly", "#2a1c0e")],
+                   foreground=[("readonly", "#f0d9a0")])
+        except Exception:
+            pass
+        for name, var, vals in [("scale", self.scale_v, list(SCALE_MAP)),
+                                ("playmode", self.playmode_v, list(PLAYMODES)),
+                                ("preset", self.preset_v, list(PRESETS))]:
+            cx, cy, w = self.M["combos"][name]
+            cb = ttk.Combobox(self.cv, textvariable=var, values=vals, state="readonly",
+                              style="Skin.TCombobox", width=max(6, int(self.S(w) / 8)),
+                              font=("Georgia", 9))
+            self.cv.create_window(self.S(cx), self.S(cy), window=cb)
+            if name == "preset":
+                cb.bind("<<ComboboxSelected>>", lambda e: self._apply_preset(self.preset_v.get()))
+            else:
+                cb.bind("<<ComboboxSelected>>", lambda e: self._changed())
 
-        # rangee 2 : knobs + selecteurs
-        mid = tk.Frame(self.root, bg=BG, padx=10, pady=2)
-        mid.grid(row=1, column=0, sticky="we")
-        row2 = [("bpm", "TEMPO", 60, 200, 130, "{:.0f}"),
-                ("distortion", "DIST", 0, 1, 0.25, "{:.2f}"),
-                ("volume", "VOLUME", 0, 1, 0.9, "{:.2f}"),
-                ("shuffle", "SHUFFLE", 0, 0.66, 0.0, "{:.2f}")]
-        for i, (k, l, lo, hi, v, f) in enumerate(row2):
-            kn = Knob(mid, l, lo, hi, v, command=lambda _v: self._changed(), fmt=f)
-            kn.grid(row=0, column=i, padx=3)
-            self.knobs[k] = kn
+    def refresh(self):
+        self.cv.delete("dyn")
+        S = self.S
+        for k, (cx, cy, r, vx, vy) in self.M["knobs"].items():
+            vmin, vmax, _, fmt = KNOB_SPEC[k]
+            frac = (self.kv[k] - vmin) / (vmax - vmin)
+            ang = math.radians(135 + frac * 270)
+            self.cv.create_line(S(cx), S(cy), S(cx + (r - 6) * math.cos(ang)),
+                                S(cy + (r - 6) * math.sin(ang)), fill=self.M["needle"],
+                                width=max(2, int(S(3))), capstyle="round", tags="dyn")
+            self.cv.create_oval(S(cx) - 3, S(cy) - 3, S(cx) + 3, S(cy) + 3,
+                                fill="#1a1206", outline=self.M["needle"], tags="dyn")
+            if self.M.get("show_values"):
+                self.cv.create_rectangle(S(vx) - S(22), S(vy) - S(9), S(vx) + S(22), S(vy) + S(9),
+                                         fill=self.valbg[k], outline="", tags="dyn")
+                self.cv.create_text(S(vx), S(vy), text=fmt.format(self.kv[k]), fill=self.M["val_fg"],
+                                    font=("Georgia", max(7, int(S(11))), "bold"), tags="dyn")
+        for w, (x, y) in self.M["waveform"].items():
+            if w == self.waveform:
+                self.cv.create_oval(S(x) - 7, S(y) - 7, S(x) + 7, S(y) + 7,
+                                    outline=self.M["needle"], width=2, tags="dyn")
+        by = self.M["banks_y"]
+        for i, bx in enumerate(self.M["banks"]):
+            if i == self.cur_bank:
+                self.cv.create_oval(S(bx) - S(22), S(by) - S(17), S(bx) + S(22), S(by) + S(17),
+                                    outline=self.M["needle"], width=3, tags="dyn")
+        C = self.M["cells"]
+        for i, cx in enumerate(C["cx"]):
+            st = self.steps[i]
+            note = st["note"] or "\u00b7"
+            sub = ("+" if st["accent"] else "") + ("~" if st["slide"] else "")
+            col = self.M["accent_fg"] if st["accent"] else (
+                self.M["slide_fg"] if st["slide"] else self.M["ink"])
+            self.cv.create_text(S(cx), S(C["cy"]) - S(7), text=note, fill=col,
+                                font=("Georgia", max(8, int(S(13))), "bold"), tags="dyn")
+            if sub:
+                self.cv.create_text(S(cx), S(C["cy"]) + S(11), text=sub, fill=col,
+                                    font=("Georgia", max(7, int(S(10))), "bold"), tags="dyn")
+            if i == self.sel:
+                self.cv.create_rectangle(S(cx) - S(C["hw"]), S(C["cy"]) - S(C["hh"]),
+                                         S(cx) + S(C["hw"]), S(C["cy"]) + S(C["hh"]),
+                                         outline=self.M["sel"], width=3, tags="dyn")
+        msg = ("\u25b6 lecture" if self.playing else (self.audio_err if not self.audio_ok else "Pret"))
+        self.cv.create_text(S(self.M["status"][0]), S(self.M["status"][1]), anchor="w",
+                            text=msg, fill="#d8c08a", font=("Georgia", max(8, int(S(11)))), tags="dyn")
 
-        sf = tk.Frame(mid, bg=BG)
-        sf.grid(row=0, column=4, padx=12)
-        tk.Label(sf, text="SCALE", bg=BG, font=("TkDefaultFont", 7, "bold")).grid(row=0, column=0)
-        self.scale = tk.StringVar(value="1/16")
-        ttk.Combobox(sf, textvariable=self.scale, values=list(SCALE_MAP),
-                     state="readonly", width=6).grid(row=1, column=0, pady=1)
-        tk.Label(sf, text="PLAY MODE", bg=BG, font=("TkDefaultFont", 7, "bold")).grid(row=0, column=1)
-        self.playmode = tk.StringVar(value="Forward")
-        ttk.Combobox(sf, textvariable=self.playmode, values=list(PLAYMODES),
-                     state="readonly", width=8).grid(row=1, column=1, padx=4)
-        self.scale.trace_add("write", lambda *a: self._changed())
-        self.playmode.trace_add("write", lambda *a: self._changed())
+    def _to_img(self, e):
+        return e.x / self.scale, e.y / self.scale
 
-        # banques 1-8
-        bf = tk.Frame(mid, bg=BG)
-        bf.grid(row=0, column=5, padx=10)
-        tk.Label(bf, text="PATTERN", bg=BG, font=("TkDefaultFont", 7, "bold")).grid(
-            row=0, column=0, columnspan=8)
-        self.bank_btns = []
-        for i in range(8):
-            b = tk.Button(bf, text=str(i + 1), width=2,
-                          command=lambda idx=i: self._switch_bank(idx))
-            b.grid(row=1, column=i, padx=1)
-            self.bank_btns.append(b)
+    def _knob_at(self, x, y):
+        for k, (cx, cy, r, vx, vy) in self.M["knobs"].items():
+            if (x - cx) ** 2 + (y - cy) ** 2 <= (r + 6) ** 2:
+                return k
+        return None
 
-        # bas : transport | clavier | colonnes
-        bottom = tk.Frame(self.root, bg=PANEL, padx=10, pady=8)
-        bottom.grid(row=2, column=0, sticky="we")
-        tr = tk.Frame(bottom, bg=PANEL)
-        tr.grid(row=0, column=0, rowspan=2, padx=(0, 12), sticky="n")
-        self.run_btn = tk.Button(tr, text="\u25b6\nRUN", width=6, height=2, bg="#7a7",
-                                 command=self.toggle_run)
-        self.run_btn.pack(pady=2)
-        tk.Button(tr, text="\u25a0\nSTOP", width=6, height=2, bg="#c77",
-                  command=self.stop).pack(pady=2)
+    def _hit(self, x, y, cx, cy, hw, hh):
+        return cx - hw <= x <= cx + hw and cy - hh <= y <= cy + hh
 
-        center = tk.Frame(bottom, bg=PANEL)
-        center.grid(row=0, column=1)
-        self.piano = Piano(center, octaves=(1, 2, 3), command=self._set_note)
-        self.piano.pack()
+    def _click(self, e):
+        x, y = self._to_img(e)
+        k = self._knob_at(x, y)
+        if k:
+            self._drag = (k, y)
+            return
+        for w, (wx, wy) in self.M["waveform"].items():
+            if self._hit(x, y, wx, wy, 42, 16):
+                self.waveform = w
+                self._changed()
+                return
+        by = self.M["banks_y"]
+        for i, bx in enumerate(self.M["banks"]):
+            if self._hit(x, y, bx, by, 30, 20):
+                self._switch_bank(i)
+                return
+        for name, b in self.M["buttons"].items():
+            if self._hit(x, y, b[0], b[1], b[2], b[3]):
+                self._button(name)
+                return
+        px0, py0, px1, py1 = self.M["piano"]
+        if px0 <= x <= px1 and py0 <= y <= py1:
+            self._piano_hit(x, px0, px1)
+            return
+        C = self.M["cells"]
+        for i, cx in enumerate(C["cx"]):
+            if self._hit(x, y, cx, C["cy"], C["hw"], C["hh"]):
+                self.sel = i
+                self.refresh()
+                return
 
-        cols = tk.Frame(bottom, bg=PANEL)
-        cols.grid(row=0, column=2, padx=(12, 0))
-        tk.Button(cols, text="ACCENT", bg="#e7b3b3", width=7,
-                  command=lambda: self._toggle("accent")).grid(row=0, column=0, padx=2)
-        tk.Button(cols, text="SLIDE", bg="#b3c8e7", width=7,
-                  command=lambda: self._toggle("slide")).grid(row=0, column=1, padx=2)
-        tk.Button(cols, text="OCT \u2193", width=5,
-                  command=lambda: self._octave(-1)).grid(row=0, column=2, padx=2)
-        tk.Button(cols, text="OCT \u2191", width=5,
-                  command=lambda: self._octave(+1)).grid(row=0, column=3, padx=2)
-        tk.Button(cols, text="REST", width=6,
-                  command=lambda: self._set_note(None)).grid(row=0, column=4, padx=8)
+    def _motion(self, e):
+        if not self._drag:
+            return
+        k, lasty = self._drag
+        _, y = self._to_img(e)
+        vmin, vmax = KNOB_SPEC[k][0], KNOB_SPEC[k][1]
+        self.kv[k] = min(vmax, max(vmin, self.kv[k] - (y - lasty) * (vmax - vmin) / 150.0))
+        self._drag = (k, y)
+        self._changed()
 
-        strip = tk.Frame(bottom, bg=PANEL)
-        strip.grid(row=1, column=1, columnspan=2, pady=(8, 0))
-        self.cells = []
-        for i in range(16):
-            c = tk.Label(strip, width=5, height=2, relief="ridge", bd=1,
-                         bg="#e9e9e9", font=("TkDefaultFont", 7))
-            c.grid(row=0, column=i, padx=1)
-            c.bind("<Button-1>", lambda e, idx=i: self._select(idx))
-            self.cells.append(c)
+    def _wheel(self, e):
+        x, y = self._to_img(e)
+        k = self._knob_at(x, y)
+        if not k:
+            return
+        vmin, vmax = KNOB_SPEC[k][0], KNOB_SPEC[k][1]
+        step = (vmax - vmin) / 40.0
+        up = getattr(e, "num", None) == 4 or getattr(e, "delta", 0) > 0
+        self.kv[k] = min(vmax, max(vmin, self.kv[k] + (step if up else -step)))
+        self._changed()
 
-        foot = tk.Frame(self.root, bg=BG, padx=10, pady=6)
-        foot.grid(row=3, column=0, sticky="we")
-        ttk.Button(foot, text="\U0001f4be Save WAV", command=self.save).grid(row=0, column=0, padx=3)
-        ttk.Button(foot, text="Clear", command=self.clear).grid(row=0, column=1, padx=3)
-        ttk.Button(foot, text="Demo", command=self.load_demo).grid(row=0, column=2, padx=3)
-        self.status = tk.StringVar()
-        tk.Label(foot, textvariable=self.status, bg=BG, fg="#444").grid(row=0, column=3, padx=10)
-        if not self.audio_ok:
-            self.run_btn.configure(state="disabled")
-            self.status.set("Audio indispo — Save WAV seul.")
-        else:
-            self.status.set("Pret. Clique un pas, puis une touche.")
+    def _piano_hit(self, x, px0, px1):
+        whites = [(w, o) for o in (1, 2, 3) for w in ["C", "D", "E", "F", "G", "A", "B"]]
+        idx = min(len(whites) - 1, max(0, int((x - px0) / (px1 - px0) * len(whites))))
+        self._set_note(f"{whites[idx][0]}{whites[idx][1]}")
 
-    # ---------------- banques ----------------
+    def _button(self, name):
+        {"run": self._toggle_run, "stop": self._stop,
+         "accent": lambda: self._toggle_step("accent"), "slide": lambda: self._toggle_step("slide"),
+         "oct_down": lambda: self._octave(-1), "oct_up": lambda: self._octave(1),
+         "rest": lambda: self._set_note(None), "save": self._save, "clear": self._clear,
+         "demo": lambda: (self._load_pattern(DEMO_PATTERN), setattr(self, "sel", 0), self._changed())}[name]()
+
+    def _apply_preset(self, name):
+        p = PRESETS.get(name)
+        if not p:
+            return
+        self.waveform = p["waveform"]
+        for k in ("cutoff", "resonance", "env_mod", "decay", "accent", "distortion", "shuffle"):
+            self.kv[k] = p[k]
+        self._changed()
+
     def _switch_bank(self, b):
         self.banks[self.cur_bank] = [dict(s) for s in self.steps]
         self.cur_bank = b
@@ -277,132 +316,109 @@ class TB303Studio:
             self.banks[b] = [{"note": None, "accent": False, "slide": False} for _ in range(16)]
         self.steps = [dict(s) for s in self.banks[b]]
         self.sel = 0
-        self._refresh_strip()
-        self._highlight_bank()
         self._changed()
-        self.status.set(f"Pattern {b + 1}")
-
-    def _highlight_bank(self):
-        for i, b in enumerate(self.bank_btns):
-            b.configure(bg=BANK_ON if i == self.cur_bank else "#d9d9d9",
-                        fg="white" if i == self.cur_bank else "black")
-
-    # ---------------- edition ----------------
-    def _select(self, idx):
-        self.sel = idx
-        self._refresh_strip()
 
     def _set_note(self, note):
         self.steps[self.sel]["note"] = note
-        self._refresh_strip()
-        self._changed()
+        self._preview(note)
         self.sel = (self.sel + 1) % 16
-        self._refresh_strip()
+        self._changed()
 
-    def _toggle(self, key):
+    def _toggle_step(self, key):
         self.steps[self.sel][key] = not self.steps[self.sel][key]
-        self._refresh_strip()
         self._changed()
 
     def _octave(self, d):
         n = self.steps[self.sel]["note"]
-        if not n:
-            return
-        self.steps[self.sel]["note"] = f"{n[:-1]}{int(n[-1]) + d}"
-        self._refresh_strip()
-        self._changed()
-
-    def _refresh_strip(self):
-        for i, c in enumerate(self.cells):
-            st = self.steps[i]
-            txt = st["note"] or "\u00b7"
-            if st["accent"]:
-                txt += " A"
-            if st["slide"]:
-                txt += " S"
-            bg = SEL if i == self.sel else ("#e9e9e9" if st["note"] else "#d2d2d2")
-            fg = RED if st["accent"] else (BLUE if st["slide"] else "black")
-            c.configure(text=f"{i+1}\n{txt}", bg=bg, fg=fg)
-
-    # ---------------- audio ----------------
-    def _collect(self):
-        return [dict(s) for s in self.steps]
+        if n:
+            self.steps[self.sel]["note"] = f"{n[:-1]}{int(n[-1]) + d}"
+            self._changed()
 
     def _params(self):
-        return dict(bpm=self.knobs["bpm"].get(), waveform=self.waveform.get(),
-                    cutoff=self.knobs["cutoff"].get(), resonance=self.knobs["resonance"].get(),
-                    env_mod=self.knobs["env_mod"].get(), decay=self.knobs["decay"].get(),
-                    accent=self.knobs["accent"].get(), distortion=self.knobs["distortion"].get(),
-                    tuning=self.knobs["tuning"].get(), swing=self.knobs["shuffle"].get(),
-                    subdiv=SCALE_MAP[self.scale.get()], play_mode=PLAYMODES[self.playmode.get()])
+        return dict(bpm=self.kv["bpm"], waveform=self.waveform, cutoff=self.kv["cutoff"],
+                    resonance=self.kv["resonance"], env_mod=self.kv["env_mod"], decay=self.kv["decay"],
+                    accent=self.kv["accent"], distortion=self.kv["distortion"], tuning=self.kv["tuning"],
+                    swing=self.kv["shuffle"], subdiv=SCALE_MAP[self.scale_v.get()],
+                    play_mode=PLAYMODES[self.playmode_v.get()])
 
     def _render(self, repeats=1):
-        audio = self.tb.render(self._collect(), repeats=repeats, **self._params())
-        vol = self.knobs["volume"].get()
-        return np.clip(audio * vol / 0.9, -1.0, 1.0)
+        a = self.tb.render([dict(s) for s in self.steps], repeats=repeats, **self._params())
+        return np.clip(a * self.kv["volume"] / 0.9, -1, 1)
 
-    def _changed(self, *_):
+    def _preview(self, note):
+        if not self.audio_ok or not note:
+            return
+        try:
+            p = self._params()
+            p.update(bpm=80, subdiv=1, swing=0.0, play_mode="forward")
+            a = self.tb.render([{"note": note, "accent": False, "slide": False}], repeats=1, **p)
+            a = np.clip(a * self.kv["volume"] / 0.9, -1, 1)
+            self._ps = pygame.sndarray.make_sound(np.ascontiguousarray((a * 0.9 * 32767).astype(np.int16)))
+            self._ps.play()
+        except Exception:
+            pass
+
+    def _changed(self):
+        self.refresh()
         if self.playing and self.audio_ok:
             self._play_loop()
 
     def _play_loop(self):
-        audio = self._render(1)
-        m = np.max(np.abs(audio)) or 1.0
-        data = np.ascontiguousarray((audio / m * 0.95 * 32767).astype(np.int16))
-        pygame.mixer.stop()
-        self._snd = pygame.sndarray.make_sound(data)
-        self._snd.play(loops=-1)
-        self.status.set(f"\u25b6 {self.playmode.get()} | {self.scale.get()} | "
-                        f"{self.knobs['bpm'].get():.0f} BPM")
+        try:
+            a = self._render(1)
+            d = np.ascontiguousarray((np.clip(a, -1, 1) * 32767).astype(np.int16))
+            pygame.mixer.stop()
+            self._snd = pygame.sndarray.make_sound(d)
+            self._snd.play(loops=-1)
+        except Exception as e:
+            self.playing = False
+            self.audio_err = f"RUN KO ({e})"
+            self.refresh()
 
-    def toggle_run(self):
+    def _toggle_run(self):
         if not self.audio_ok:
+            messagebox.showinfo(
+                "Audio indisponible",
+                "Le moteur audio n'est pas actif : " + (self.audio_err or "pygame manquant") + ".\n\n"
+                "RUN n'a donc rien a jouer (le bouton fonctionne, mais il n'y a pas de son).\n\n"
+                "Dans le terminal ou tu lances le script :\n"
+                "    pip install pygame\n"
+                "puis relance.  (SAVE WAV fonctionne sans pygame.)")
             return
         if self.playing:
-            self.stop()
+            self._stop()
         else:
             self.playing = True
-            self.run_btn.configure(text="\u23f8\nPAUSE")
             self._play_loop()
+            self.refresh()
 
-    def stop(self):
+    def _stop(self):
         self.playing = False
-        self.run_btn.configure(text="\u25b6\nRUN")
         if self.audio_ok:
             pygame.mixer.stop()
-        self.status.set("Stop.")
+        self.refresh()
 
-    def save(self):
+    def _save(self):
         path = filedialog.asksaveasfilename(defaultextension=".wav",
-                                            filetypes=[("WAV", "*.wav")],
-                                            initialfile="tb303_pattern.wav")
-        if not path:
-            return
-        try:
-            self.status.set("Rendu…")
-            self.root.update_idletasks()
+                                            filetypes=[("WAV", "*.wav")], initialfile="tb303.wav")
+        if path:
             self.tb.write_wav(self._render(4), path)
-            self.status.set(f"Enregistre : {path}")
-        except Exception as e:
-            messagebox.showerror("Erreur", str(e))
 
-    def clear(self):
+    def _clear(self):
         for s in self.steps:
             s.update(note=None, accent=False, slide=False)
         self.sel = 0
-        self._refresh_strip()
-        self._changed()
-
-    def load_demo(self):
-        self._load_pattern(DEMO_PATTERN)
-        self.sel = 0
-        self._refresh_strip()
         self._changed()
 
 
 def main():
+    here = os.path.dirname(os.path.abspath(__file__))
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    image = args[0] if args else os.path.join(here, "tb303_skin.png")
+    if not os.path.exists(image):
+        raise SystemExit(f"Image introuvable : {image}")
     root = tk.Tk()
-    TB303Studio(root)
+    SkinStudio(root, image)
     root.mainloop()
 
 
