@@ -1,16 +1,16 @@
 """
-tb303_rt.py — moteur TB-303 *temps reel* (callback sounddevice + DSP compilee Numba).
+tb303_rt.py - real-time TB-303 engine (sounddevice callback + Numba-compiled DSP).
 
-Contrairement a tb303.py (rendu hors-ligne puis boucle), ici l'audio est genere
-en continu, bloc par bloc, dans un callback. Les parametres (potards) et le pattern
-sont lus a chaque bloc : tourner un potard s'entend immediatement, sans redemarrer
-la boucle. La meme chaine DSP que tb303.py est utilisee (oscillateur PolyBLEP ->
-filtre ladder 4 etages sortie 3e pole ~18 dB/oct, contre-reaction 4e pole + tanh).
+Unlike tb303.py (offline render then loop), audio here is generated continuously,
+block by block, inside a callback. Parameters (knobs) and the pattern are read on
+every block: turning a knob is heard immediately, with no loop restart. The same DSP
+chain as tb303.py is used (PolyBLEP oscillator -> 4-stage ladder filter tapped at the
+3rd pole ~18 dB/oct, 4th-pole feedback + tanh saturation).
 
-Dependances machine :  pip install numba sounddevice   (+ libportaudio2 sous Linux :
+Machine dependencies:  pip install numba sounddevice   (+ libportaudio2 on Linux:
                        sudo apt install libportaudio2)
 
-Test rapide (joue la demo en temps reel et balaie le cutoff pour prouver le live) :
+Quick test (plays the demo in real time and sweeps the cutoff to prove it's live):
     python3 tb303_rt.py
 """
 import math
@@ -18,28 +18,28 @@ import threading
 import os
 import numpy as np
 
-# WSL/WSLg : router l'audio vers PulseAudio sans avoir a exporter la variable a la main
+# WSL/WSLg: route audio to PulseAudio without having to export the variable by hand
 if os.path.exists("/mnt/wslg/PulseServer"):
     os.environ.setdefault("PULSE_SERVER", "unix:/mnt/wslg/PulseServer")
 
 try:
     from numba import njit
     _HAS_NUMBA = True
-except Exception:                     # repli : marche mais risque de saccader
+except Exception:                     # fallback: works but may glitch
     _HAS_NUMBA = False
     def njit(*a, **k):
         def deco(f): return f
         return (deco if (a and callable(a[0])) is False else a[0])
 
-# index des parametres partages (ecrits par le GUI, lus par le callback)
+# indices of the shared parameters (written by the GUI, read by the callback)
 P_CUTOFF, P_RESO, P_ENVMOD, P_DECAY, P_ACCENT, P_BPM = 0, 1, 2, 3, 4, 5
 P_DIST, P_VOL, P_WAVE, P_SUBDIV, P_GATE, P_SWING, P_TUNING, P_PLAY = 6, 7, 8, 9, 10, 11, 12, 13
 NPARAMS = 14
 
-# index de l'etat persistant
+# indices of the persistent state
 S_PHASE, S_S1, S_S2, S_S3, S_S4, S_FENV, S_AENV = 0, 1, 2, 3, 4, 5, 6
 S_FREQ, S_STEP, S_SIS, S_GATE, S_ACC, S_PREVSL, S_INIT, S_GLIDE = 7, 8, 9, 10, 11, 12, 13, 14
-S_PREVF, S_PREVN = 15, 16          # audition d'une note (frequence, echantillons restants)
+S_PREVF, S_PREVN = 15, 16          # note audition (frequency, samples remaining)
 NSTATE = 18
 
 
@@ -79,7 +79,7 @@ def synth_block(out, frames, st, pr, pat_f, pat_a, pat_s, nsteps, sr):
 
     if playing < 0.5:
         prevn = st[S_PREVN]
-        if prevn > 0.5:                       # audition d'une note (clic clavier a l'arret)
+        if prevn > 0.5:                       # note audition (keyboard click while stopped)
             prevf = st[S_PREVF]
             rel_at = 0.12 * sr
             for i in range(frames):
@@ -120,7 +120,7 @@ def synth_block(out, frames, st, pr, pat_f, pat_a, pat_s, nsteps, sr):
         return
 
     for i in range(frames):
-        # --- sequenceur ---
+        # --- sequencer ---
         sd = step_dur * (1.0 + swing) if (step % 2 == 0) else step_dur * (1.0 - swing)
         if init < 0.5 or sis >= sd:
             if init >= 0.5:
@@ -129,16 +129,16 @@ def synth_block(out, frames, st, pr, pat_f, pat_a, pat_s, nsteps, sr):
             else:
                 step = 0; sis = 0.0; init = 1.0
             f = pat_f[step]
-            if f <= 0.0:                       # silence
+            if f <= 0.0:                       # rest
                 gate = 0.0
             else:
                 tgt = f * tun
                 glide_t = tgt
-                if prevsl > 0.5:               # legato : on glisse, pas de re-attaque
+                if prevsl > 0.5:               # legato: glide, no re-attack
                     pass
                 else:
                     freq = tgt
-                    fenv = 1.0                 # re-declenche l'enveloppe de filtre
+                    fenv = 1.0                 # re-trigger the filter envelope
                 gate = 1.0
                 acc = pat_a[step]
             prevsl = pat_s[step]
@@ -146,11 +146,11 @@ def synth_block(out, frames, st, pr, pat_f, pat_a, pat_s, nsteps, sr):
         # portamento
         freq += (glide_t - freq) * glide
 
-        # gate (longueur de note ; slide = legato sur tout le pas)
+        # gate (note length; slide = legato across the whole step)
         gate_samps = sd if prevsl > 0.5 else gate_len * sd
         g_on = 1.0 if (gate > 0.5 and sis < gate_samps) else 0.0
 
-        # --- oscillateur PolyBLEP ---
+        # --- PolyBLEP oscillator ---
         dt = freq / sr
         if wave < 0.5:                          # saw
             osc = 2.0 * phase - 1.0 - _blep(phase, dt)
@@ -163,13 +163,13 @@ def synth_block(out, frames, st, pr, pat_f, pat_a, pat_s, nsteps, sr):
         if phase >= 1.0:
             phase -= 1.0
 
-        # --- enveloppes ---
+        # --- envelopes ---
         acc_boost = 1.0 + accent * acc
         target = g_on * acc_boost
         aenv += (a_atk if target > aenv else a_rel) * (target - aenv)
         fenv *= fdec
 
-        # --- filtre ladder type 303 ---
+        # --- 303-style ladder filter ---
         fc = base_fc * (2.0 ** (envmod * 6.0 * fenv + accent * acc * 1.5))
         if fc > 16000.0:
             fc = 16000.0
@@ -187,7 +187,7 @@ def synth_block(out, frames, st, pr, pat_f, pat_a, pat_s, nsteps, sr):
             drive = 1.0 + dist * 18.0
             y = math.tanh(y * drive) / math.tanh(drive) if drive > 0 else y
 
-        out[i] = math.tanh(y * vol)         # limiteur doux : borne sans ecreter dur
+        out[i] = math.tanh(y * vol)         # gentle limiter: bounds without hard clipping
         sis += 1.0
 
     st[S_PHASE] = phase; st[S_S1] = s1; st[S_S2] = s2; st[S_S3] = s3; st[S_S4] = s4
@@ -205,7 +205,7 @@ def note_to_freq(name, tuning=440.0):
     i = 0
     while i < len(name) and (name[i].isalpha() or name[i] == "#"):
         i += 1
-    key = name[:i].upper().replace("♯", "#")
+    key = name[:i].upper().replace("\u266f", "#")
     octave = int(name[i:]) if name[i:] else 4
     semis = _NOTES.get(key, 0) + (octave - 4) * 12 - 9    # A4 = 440
     return tuning * (2.0 ** (semis / 12.0))
@@ -222,7 +222,7 @@ def parse_step(s):
 
 
 class RealtimeEngine:
-    """Moteur audio temps reel. Le GUI appelle set_param / set_pattern / set_playing."""
+    """Real-time audio engine. The GUI calls set_param / set_pattern / set_playing."""
 
     def __init__(self, sr=44100, blocksize=256):
         self.sr = sr
@@ -235,7 +235,7 @@ class RealtimeEngine:
         self.nsteps = 16
         self._lock = threading.Lock()
         self.stream = None
-        # valeurs par defaut
+        # default values
         d = {"cutoff": 0.4, "resonance": 0.5, "env_mod": 0.5, "decay": 0.4,
              "accent": 0.5, "bpm": 130, "distortion": 0.0, "volume": 0.9,
              "waveform": "saw", "subdiv": 4, "gate_len": 0.55, "swing": 0.0, "tuning": 440}
@@ -250,7 +250,6 @@ class RealtimeEngine:
 
     def set_param(self, name, value):
         if name == "waveform":
-            self.params[P_WAVE] = 0.0 if str(value).startswith("s") and value != "square" else 1.0
             self.params[P_WAVE] = 0.0 if value == "saw" else 1.0
         elif name == "playing":
             self.params[P_PLAY] = 1.0 if value else 0.0
@@ -258,7 +257,7 @@ class RealtimeEngine:
             self.params[self._PIDX[name]] = float(value)
 
     def set_pattern(self, steps, tuning=None):
-        """steps : liste de 16 chaines ('C2', 'C2+', 'C2~', '.') ou tuples (note,acc,slide)."""
+        """steps: list of strings ('C2', 'C2+', 'C2~', '.') or (note, acc, slide) tuples."""
         tun = self.params[P_TUNING] if tuning is None else tuning
         with self._lock:
             self.nsteps = max(1, min(64, len(steps)))
@@ -274,11 +273,11 @@ class RealtimeEngine:
 
     def set_playing(self, on):
         if on:
-            self.state[S_INIT] = 0.0            # repart au pas 0
+            self.state[S_INIT] = 0.0            # restart at step 0
         self.set_param("playing", 1 if on else 0)
 
     def preview(self, note, dur=0.45):
-        """Joue une note ponctuelle (audition au clic clavier), meme a l'arret."""
+        """Play a one-shot note (audition on keyboard click), even while stopped."""
         f = note_to_freq(note, 440.0) * (self.params[P_TUNING] / 440.0) if note else 0.0
         if f > 0.0:
             self.state[S_PREVF] = f
@@ -320,7 +319,7 @@ def _demo():
     eng.set_param("bpm", 130)
     eng.start()
     eng.set_playing(True)
-    print("Lecture temps reel — balayage du CUTOFF en direct (Ctrl+C pour quitter)...")
+    print("Real-time playback - sweeping CUTOFF live (Ctrl+C to quit)...")
     try:
         t0 = time.time()
         while time.time() - t0 < 12:
@@ -331,7 +330,7 @@ def _demo():
         pass
     finally:
         eng.set_playing(False); time.sleep(0.1); eng.stop()
-        print("fini.")
+        print("done.")
 
 
 if __name__ == "__main__":

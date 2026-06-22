@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-tb303_studio.py — GUI "skinnee" : habillage = image (tb303_skin.png),
-controles fonctionnels superposes aux coordonnees relevees sur tes reperes rouges.
+tb303_studio.py - skinned GUI: the panel is an image (tb303_skin.png), with
+functional controls overlaid at coordinates taken from the red markers.
 
-Va avec tb303.py et tb303_skin.png (meme dossier).
-numpy + Pillow requis ; pygame optionnel (lecture temps reel).
-Lancement : python tb303_studio.py
+Goes with tb303.py and tb303_skin.png (same folder).
+Requires numpy + Pillow; pygame optional (also tb303_rt for real-time playback).
+Run: python tb303_studio.py
 """
 import sys, os, json, math
 import numpy as np
@@ -13,8 +13,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from tb303 import TB303, DEMO_PATTERN, parse_step, apply_play_mode
 try:
-    from tb303_rt import RealtimeEngine
-    _HAS_RT = True
+    from tb303_rt import RealtimeEngine, _HAS_NUMBA
+    _HAS_RT = _HAS_NUMBA          # real-time only if Numba is present (else too slow)
 except Exception:
     _HAS_RT = False
 try:
@@ -49,7 +49,7 @@ KNOB_SPEC = {
     "volume": (0, 1, 0.9, "{:.2f}"), "shuffle": (0, 0.66, 0.0, "{:.2f}"),
 }
 
-# Carte des coordonnees (pixels image native) relevee sur les reperes rouges
+# Coordinate map (native image pixels) taken from the red markers
 SKIN_MAP = {
     "knobs": {
         "tuning": [277, 105, 44, 280, 191], "cutoff": [386, 105, 44, 386, 190],
@@ -120,14 +120,14 @@ class SkinStudio:
         self.cv.bind("<MouseWheel>", self._wheel)
         self.cv.bind("<Button-4>", self._wheel)
         self.cv.bind("<Button-5>", self._wheel)
-        # --- menu Fichier : projet .tb303 (etat complet) + export WAV ---
+        # --- File menu: .tb303 project (full state) + WAV export ---
         menubar = tk.Menu(root)
         filem = tk.Menu(menubar, tearoff=0)
-        filem.add_command(label="Ouvrir projet\u2026   (Ctrl+O)", command=self._load_project)
-        filem.add_command(label="Sauvegarder projet\u2026   (Ctrl+S)", command=self._save_project)
+        filem.add_command(label="Open project\u2026   (Ctrl+O)", command=self._load_project)
+        filem.add_command(label="Save project\u2026   (Ctrl+S)", command=self._save_project)
         filem.add_separator()
-        filem.add_command(label="Exporter WAV\u2026", command=self._save)
-        menubar.add_cascade(label="Fichier", menu=filem)
+        filem.add_command(label="Export WAV\u2026", command=self._save)
+        menubar.add_cascade(label="File", menu=filem)
         root.config(menu=menubar)
         root.bind("<Control-s>", lambda e: self._save_project())
         root.bind("<Control-o>", lambda e: self._load_project())
@@ -158,7 +158,7 @@ class SkinStudio:
         self.audio_err = ""
         self.rt = None
         self.mode = None
-        # 1) moteur temps reel (sounddevice + Numba) en priorite
+        # 1) real-time engine (sounddevice + Numba) first
         if _HAS_RT:
             try:
                 self.rt = RealtimeEngine(sr=self.SR)
@@ -168,10 +168,10 @@ class SkinStudio:
                 return True
             except Exception as e:
                 self.rt = None
-                self.audio_err = f"temps reel indispo ({e}) — repli pygame"
-        # 2) repli : ancien moteur pygame (rendu + boucle)
+                self.audio_err = f"real-time unavailable ({e}) - pygame fallback"
+        # 2) fallback: old pygame engine (render + loop)
         if not _HAS_PYGAME:
-            self.audio_err = self.audio_err or "pygame absent — pip install pygame"
+            self.audio_err = self.audio_err or "pygame missing - pip install pygame"
             return False
         if os.path.exists("/mnt/wslg/PulseServer"):
             os.environ.setdefault("SDL_AUDIODRIVER", "pulseaudio")
@@ -186,7 +186,7 @@ class SkinStudio:
             return False
 
     def _push_rt(self):
-        """Envoie tout l'etat courant au moteur temps reel (instantane, sans coupure)."""
+        """Push the whole current state to the real-time engine (instant, no dropout)."""
         e = self.rt
         if e is None:
             return
@@ -200,10 +200,10 @@ class SkinStudio:
                                 PLAYMODES[self.playmode_v.get()])
         e.set_pattern([(s["note"], s["accent"], s["slide"]) for s in steps])
 
-    _RT_PARAM = {"shuffle": "swing"}            # nom studio -> nom moteur
+    _RT_PARAM = {"shuffle": "swing"}            # studio name -> engine name
 
     def _push_param(self, name):
-        """Envoie UN seul parametre au moteur (cout negligeable, reponse immediate)."""
+        """Push a SINGLE parameter to the engine (negligible cost, instant response)."""
         e = self.rt
         if e is None:
             return
@@ -221,10 +221,10 @@ class SkinStudio:
         e.set_pattern([(s["note"], s["accent"], s["slide"]) for s in steps])
 
     def _knob_live(self, k):
-        """Potard manipule : on pousse l'audio TOUT DE SUITE, le redessin est regroupe."""
+        """Knob moved: push audio RIGHT AWAY, redraw is coalesced."""
         if self.mode == "rt" and self.rt is not None:
             try:
-                self._push_param(k)             # audio d'abord -> aucune latence
+                self._push_param(k)             # audio first -> no latency
             except Exception:
                 pass
         elif self.playing and self.audio_ok:
@@ -232,7 +232,7 @@ class SkinStudio:
         self._schedule_refresh()
 
     def _schedule_refresh(self):
-        """Regroupe les redessins (~60 fps max) : l'audio reste prioritaire et immediat."""
+        """Coalesce redraws (~60 fps max): audio stays prioritized and immediate."""
         if not getattr(self, "_refresh_pending", False):
             self._refresh_pending = True
             self.root.after(16, self._do_refresh)
@@ -435,7 +435,7 @@ class SkinStudio:
         if not self.audio_ok or not note:
             return
         if self.mode == "rt" and self.rt is not None:
-            self.rt.preview(note)               # audition temps reel
+            self.rt.preview(note)               # real-time audition
             return
         try:
             p = self._params()
@@ -451,11 +451,11 @@ class SkinStudio:
         self.refresh()
         if self.mode == "rt" and self.rt is not None:
             try:
-                self._push_rt()                   # temps reel : mise a jour instantanee
+                self._push_rt()                   # real-time: instant update
             except Exception as e:
                 self.audio_err = f"push KO ({e})"
         elif self.playing and self.audio_ok:
-            self._play_loop()                     # pygame : re-rend la boucle
+            self._play_loop()                     # pygame: re-render the loop
 
     def _play_loop(self):
         try:
@@ -472,12 +472,12 @@ class SkinStudio:
     def _toggle_run(self):
         if not self.audio_ok:
             messagebox.showinfo(
-                "Audio indisponible",
-                "Le moteur audio n'est pas actif : " + (self.audio_err or "pygame manquant") + ".\n\n"
-                "RUN n'a donc rien a jouer (le bouton fonctionne, mais il n'y a pas de son).\n\n"
-                "Dans le terminal ou tu lances le script :\n"
+                "Audio unavailable",
+                "The audio engine is not active: " + (self.audio_err or "pygame missing") + ".\n\n"
+                "So RUN has nothing to play (the button works, there is just no sound).\n\n"
+                "In the terminal where you launch the script:\n"
                 "    pip install pygame   (ou : pip install sounddevice numba)\n"
-                "puis relance.  (SAVE WAV fonctionne sans audio.)")
+                "then relaunch.  (SAVE WAV works without audio.)")
             return
         if self.mode == "rt":
             self.playing = not self.playing
@@ -516,9 +516,9 @@ class SkinStudio:
         if path:
             self.tb.write_wav(self._render(4), path)
 
-    # ---------- projet .tb303 (etat complet, rappelable) ----------
+    # ---------- .tb303 project (full, recallable state) ----------
     def _project_state(self):
-        self.banks[self.cur_bank] = [dict(s) for s in self.steps]   # fige la banque courante
+        self.banks[self.cur_bank] = [dict(s) for s in self.steps]   # freeze current bank
         return {
             "format": "tb303-studio", "version": 1,
             "knobs": {k: round(float(v), 4) for k, v in self.kv.items()},
@@ -564,7 +564,7 @@ class SkinStudio:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self._project_state(), f, indent=1, ensure_ascii=False)
         except Exception as e:
-            messagebox.showerror("Sauvegarde impossible", str(e))
+            messagebox.showerror("Cannot save", str(e))
 
     def _load_project(self):
         path = filedialog.askopenfilename(
@@ -575,10 +575,10 @@ class SkinStudio:
             with open(path, "r", encoding="utf-8") as f:
                 st = json.load(f)
             if st.get("format") != "tb303-studio":
-                raise ValueError("Ce fichier n'est pas un projet TB-303.")
+                raise ValueError("This file is not a TB-303 project.")
             self._apply_project(st)
         except Exception as e:
-            messagebox.showerror("Ouverture impossible", str(e))
+            messagebox.showerror("Cannot open", str(e))
 
     def _clear(self):
         for s in self.steps:

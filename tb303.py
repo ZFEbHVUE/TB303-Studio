@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-tb303.py — Emulation fidele du Roland TB-303 Bass Line (numpy only).
+tb303.py - TB-303 Bass Line-style emulation (numpy only).
 
-Chaine : oscillateur saw/square anti-aliase (PolyBLEP) -> filtre passe-bas
-resonant 3 poles (~18 dB/oct) avec saturation -> enveloppes VCF + VCA,
-ACCENT, SLIDE. Sequenceur pas a pas avec subdivision (Scale), swing
-(Shuffle) et modes de lecture (Play Mode).
+Chain: anti-aliased saw/square oscillator (PolyBLEP) -> resonant low-pass
+ladder filter (~18 dB/oct) with saturation -> VCF + VCA envelopes, ACCENT,
+SLIDE. Step sequencer with subdivision (Scale), swing (Shuffle) and playback
+modes (Play Mode).
 
-Notation d'un pas : "C2" | "C2+" (accent) | "C2~" (slide) | "C2+~" | "." (rest)
-Ou dict : {"note":"C2", "accent":True, "slide":False}
+Step notation: "C2" | "C2+" (accent) | "C2~" (slide) | "C2+~" | "." (rest)
+Or dict: {"note":"C2", "accent":True, "slide":False}
 
-Exemple : python tb303.py   ->  tb303_demo.wav
+Example: python tb303.py   ->  tb303_demo.wav
 """
 
 import re
@@ -53,7 +53,7 @@ def parse_step(s):
 
 
 def apply_play_mode(steps, mode):
-    """Transforme l'ordre/les notes selon le mode de lecture."""
+    """Reorder/transform the steps according to the playback mode."""
     if mode == "reverse":
         return list(reversed(steps))
     if mode == "fwd_rev":
@@ -123,7 +123,7 @@ class TB303:
         N = int(starts[-1])
         slide_samps = int(0.060 * sr)
 
-        # --- signaux de controle ---
+        # --- control signals ---
         target_pitch = np.zeros(N)
         gate = np.zeros(N)
         accent_amp = np.zeros(N)
@@ -169,7 +169,7 @@ class TB303:
             p = p + gc * (target_pitch[i] - p) if glide_mask[i] else target_pitch[i]
             pitch[i] = p
 
-        # --- enveloppe VCF ---
+        # --- VCF envelope ---
         filt_env = np.zeros(N)
         acc_env = np.zeros(N)
         tau = 0.04 + decay * 1.6
@@ -192,23 +192,23 @@ class TB303:
         fc = np.clip(fc, 20.0, 0.45 * sr)
         g = 1.0 - np.exp(-2.0 * np.pi * fc / sr)
 
-        # --- filtre type 303 : ladder 4 etages, sortie au 3e pole (~18 dB/oct,
-        #     plus lumineux que le Moog 24 dB), contre-reaction depuis le 4e pole ---
-        res_amt = resonance * 4.2            # pic resonant -> friser l'auto-oscillation
+        # --- 303-style filter: 4-stage ladder, output tapped at the 3rd pole
+        #     (~18 dB/oct, brighter than a Moog's 24 dB), feedback from the 4th pole ---
+        res_amt = resonance * 4.2            # resonant peak -> near self-oscillation
         s1 = s2 = s3 = s4 = ae = 0.0
         a_atk = 1.0 - math.exp(-1.0 / (sr * 0.003))
         a_rel = 1.0 - math.exp(-1.0 / (sr * 0.008))
         out = np.empty(N)
         for i in range(N):
             gi = g[i]
-            inp = math.tanh(osc[i] - res_amt * s4)   # saturation entree+contre-reaction (4e pole)
+            inp = math.tanh(osc[i] - res_amt * s4)   # saturate input + feedback (4th pole)
             s1 += gi * (inp - s1)
             s2 += gi * (s1 - s2)
             s3 += gi * (s2 - s3)
             s4 += gi * (s3 - s4)
             target = gate[i] * (1.0 + accent_amp[i] * 0.8)
             ae += (a_atk if target > ae else a_rel) * (target - ae)
-            out[i] = s3 * 1.9 * ae           # sortie 3e pole = 18 dB/oct (grain 303)
+            out[i] = s3 * 1.9 * ae           # 3rd-pole output = 18 dB/oct (303 grain)
 
         if distortion > 0:
             drive = 1.0 + distortion * 20.0
