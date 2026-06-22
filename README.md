@@ -13,6 +13,8 @@ The audio engine runs oscillator → resonant low-pass filter → envelopes →
 
 ---
 
+![TB303-Studio GUI](docs/gui_main.png)
+
 ## Table of contents
 
 1. [Folder contents](#folder-contents)
