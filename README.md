@@ -11,10 +11,9 @@ The audio engine runs oscillator → resonant low-pass filter → envelopes →
 > saw/square oscillator, resonant ~18 dB/oct ladder filter swept by the envelope,
 > accent, slide, sequencer with swing) but the original schematic is approximated,
 > not copied. No Roland branding, logo, or sample is used — the panel design is original.
+>
 > 
 ![TB303-Studio GUI](docs/gui_main.png)
-
----
 
 ## Table of contents
 
