@@ -344,7 +344,7 @@ class SkinStudio:
                 return
         px0, py0, px1, py1 = self.M["piano"]
         if px0 <= x <= px1 and py0 <= y <= py1:
-            self._piano_hit(x, px0, px1)
+            self._piano_hit(x, y, px0, py0, px1, py1)
             return
         C = self.M["cells"]
         for i, cx in enumerate(C["cx"]):
@@ -374,10 +374,21 @@ class SkinStudio:
         self.kv[k] = min(vmax, max(vmin, self.kv[k] + (step if up else -step)))
         self._knob_live(k)
 
-    def _piano_hit(self, x, px0, px1):
-        whites = [(w, o) for o in (1, 2, 3) for w in ["C", "D", "E", "F", "G", "A", "B"]]
-        idx = min(len(whites) - 1, max(0, int((x - px0) / (px1 - px0) * len(whites))))
-        self._set_note(f"{whites[idx][0]}{whites[idx][1]}")
+    def _piano_hit(self, x, y, px0, py0, px1, py1):
+        letters = "CDEFGAB"
+        nwhite = 21                              # 3 octaves of white keys (C..B x3)
+        ww = (px1 - px0) / nwhite
+        wi = min(nwhite - 1, max(0, int((x - px0) / ww)))
+        # black keys live on the upper ~60% of the keyboard, centered on the boundary
+        # after C, D, F, G, A (white letter index 0,1,3,4,5 -> C#,D#,F#,G#,A#)
+        if y <= py0 + 0.60 * (py1 - py0):
+            for cand in (wi, wi - 1):
+                if 0 <= cand < nwhite - 1 and (cand % 7) in (0, 1, 3, 4, 5):
+                    center = px0 + (cand + 1) * ww
+                    if abs(x - center) <= 0.32 * ww:
+                        self._set_note(f"{letters[cand % 7]}#{1 + cand // 7}")
+                        return
+        self._set_note(f"{letters[wi % 7]}{1 + wi // 7}")
 
     def _button(self, name):
         {"run": self._toggle_run, "stop": self._stop,
