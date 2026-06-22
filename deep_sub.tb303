@@ -1,0 +1,112 @@
+{
+ "format": "tb303-studio",
+ "version": 1,
+ "knobs": {
+  "tuning": 440,
+  "cutoff": 0.24,
+  "resonance": 0.1,
+  "env_mod": 0.1,
+  "decay": 0.55,
+  "accent": 0.35,
+  "bpm": 124,
+  "distortion": 0.0,
+  "volume": 0.9,
+  "shuffle": 0.12
+ },
+ "waveform": "square",
+ "scale": "1/16",
+ "playmode": "Forward",
+ "preset": "Sub Bass",
+ "cur_bank": 0,
+ "banks": [
+  [
+   {
+    "note": "C1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": null,
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": null,
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "D#1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": null,
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "G1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": null,
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "A#0",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": null,
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "G1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": null,
+    "accent": false,
+    "slide": false
+   }
+  ],
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ]
+}

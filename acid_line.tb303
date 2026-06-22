@@ -1,0 +1,112 @@
+{
+ "format": "tb303-studio",
+ "version": 1,
+ "knobs": {
+  "tuning": 440,
+  "cutoff": 0.3,
+  "resonance": 0.85,
+  "env_mod": 0.65,
+  "decay": 0.55,
+  "accent": 0.7,
+  "bpm": 130,
+  "distortion": 0.18,
+  "volume": 0.9,
+  "shuffle": 0.0
+ },
+ "waveform": "saw",
+ "scale": "1/16",
+ "playmode": "Forward",
+ "preset": "Acid",
+ "cur_bank": 0,
+ "banks": [
+  [
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "D#2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "G2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "A#1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "D#2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "G2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "A#1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": true
+   }
+  ],
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ]
+}
