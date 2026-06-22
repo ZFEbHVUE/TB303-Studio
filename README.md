@@ -1,4 +1,5 @@
 # TB-303 Studio — Bass Line (acid synth + steampunk skin)
+**by Stéphane "ZFEbHVUE"**
 
 An *acid* bass synthesizer inspired by the Roland TB-303, written in pure Python
 (NumPy), with a graphical interface "skinned" by an image (a steampunk panel).
@@ -10,10 +11,10 @@ The audio engine runs oscillator → resonant low-pass filter → envelopes →
 > saw/square oscillator, resonant ~18 dB/oct ladder filter swept by the envelope,
 > accent, slide, sequencer with swing) but the original schematic is approximated,
 > not copied. No Roland branding, logo, or sample is used — the panel design is original.
+> 
+![TB303-Studio GUI](docs/gui_main.png)
 
 ---
-
-![TB303-Studio GUI](docs/gui_main.png)
 
 ## Table of contents
 
