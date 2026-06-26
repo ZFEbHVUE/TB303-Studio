@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
 """
-tb303_studio.py — GUI "skinnee" : habillage = image (tb303_skin.png),
-controles fonctionnels superposes aux coordonnees relevees sur tes reperes rouges.
+tb303_studio.py - skinned GUI: the panel is an image (tb303_skin.png), with
+functional controls overlaid at coordinates taken from the red markers.
 
-Va avec tb303.py et tb303_skin.png (meme dossier).
-numpy + Pillow requis ; pygame optionnel (lecture temps reel).
-Lancement : python tb303_studio.py
+Goes with tb303.py and tb303_skin.png (same folder).
+Requires numpy + Pillow; pygame optional (also tb303_rt for real-time playback).
+Run: python tb303_studio.py
 """
 import sys, os, json, math
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from tb303 import TB303, DEMO_PATTERN, parse_step
+from tb303 import TB303, DEMO_PATTERN, parse_step, apply_play_mode
+import instruments
+try:
+    from tb303_rt import RealtimeEngine, _HAS_NUMBA
+    _HAS_RT = _HAS_NUMBA          # real-time only if Numba is present (else too slow)
+except Exception:
+    _HAS_RT = False
 try:
     from PIL import Image, ImageTk
     _HAS_PIL = True
@@ -44,7 +50,7 @@ KNOB_SPEC = {
     "volume": (0, 1, 0.9, "{:.2f}"), "shuffle": (0, 0.66, 0.0, "{:.2f}"),
 }
 
-# Carte des coordonnees (pixels image native) relevee sur les reperes rouges
+# Coordinate map (native image pixels) taken from the red markers
 SKIN_MAP = {
     "knobs": {
         "tuning": [277, 105, 44, 280, 191], "cutoff": [386, 105, 44, 386, 190],
@@ -115,14 +121,25 @@ class SkinStudio:
         self.cv.bind("<MouseWheel>", self._wheel)
         self.cv.bind("<Button-4>", self._wheel)
         self.cv.bind("<Button-5>", self._wheel)
-        # --- menu Fichier : projet .tb303 (etat complet) + export WAV ---
+        # --- File menu: .tb303 project (full state) + WAV export ---
         menubar = tk.Menu(root)
         filem = tk.Menu(menubar, tearoff=0)
-        filem.add_command(label="Ouvrir projet\u2026   (Ctrl+O)", command=self._load_project)
-        filem.add_command(label="Sauvegarder projet\u2026   (Ctrl+S)", command=self._save_project)
+        filem.add_command(label="Open project\u2026   (Ctrl+O)", command=self._load_project)
+        filem.add_command(label="Save project\u2026   (Ctrl+S)", command=self._save_project)
         filem.add_separator()
-        filem.add_command(label="Exporter WAV\u2026", command=self._save)
-        menubar.add_cascade(label="Fichier", menu=filem)
+        filem.add_command(label="Export WAV\u2026", command=self._save)
+        menubar.add_cascade(label="File", menu=filem)
+        instr = tk.Menu(menubar, tearoff=0)
+        self.instrument = "TB-303"
+        self.voice = None
+        self.sampler = None
+        self._instr_var = tk.StringVar(value="TB-303")
+        for name in ("TB-303",) + tuple(instruments.BUILTIN.keys()):
+            instr.add_radiobutton(label=name, variable=self._instr_var, value=name,
+                                  command=lambda n=name: self._set_instrument(n))
+        instr.add_separator()
+        instr.add_command(label="Load sample (.wav)\u2026", command=self._load_sample)
+        menubar.add_cascade(label="Instrument", menu=instr)
         root.config(menu=menubar)
         root.bind("<Control-s>", lambda e: self._save_project())
         root.bind("<Control-o>", lambda e: self._load_project())
@@ -151,20 +168,90 @@ class SkinStudio:
 
     def _init_audio(self):
         self.audio_err = ""
+        self.rt = None
+        self.mode = None
+        # 1) real-time engine (sounddevice + Numba) first
+        if _HAS_RT:
+            try:
+                self.rt = RealtimeEngine(sr=self.SR)
+                self.rt.start()
+                self.mode = "rt"
+                self._push_rt()
+                return True
+            except Exception as e:
+                self.rt = None
+                self.audio_err = f"real-time unavailable ({e}) - pygame fallback"
+        # 2) fallback: old pygame engine (render + loop)
         if not _HAS_PYGAME:
-            self.audio_err = "pygame absent — pip install pygame"
+            self.audio_err = self.audio_err or "pygame missing - pip install pygame"
             return False
-        # WSL/WSLg : router le son vers PulseAudio (sinon aucun peripherique audio)
         if os.path.exists("/mnt/wslg/PulseServer"):
             os.environ.setdefault("SDL_AUDIODRIVER", "pulseaudio")
-            os.environ["PULSE_SERVER"] = "unix:/mnt/wslg/PulseServer"  # ecrase une valeur stale
+            os.environ["PULSE_SERVER"] = "unix:/mnt/wslg/PulseServer"
         try:
             pygame.mixer.quit()
             pygame.mixer.init(frequency=self.SR, size=-16, channels=2)
+            self.mode = "pygame"
             return True
         except Exception as e:
             self.audio_err = f"audio KO ({e})"
             return False
+
+    def _push_rt(self):
+        """Push the whole current state to the real-time engine (instant, no dropout)."""
+        e = self.rt
+        if e is None:
+            return
+        for k in ("cutoff", "resonance", "env_mod", "decay", "accent", "bpm",
+                  "distortion", "tuning", "volume"):
+            e.set_param(k, self.kv[k])
+        e.set_param("swing", self.kv["shuffle"])
+        e.set_param("waveform", self.waveform)
+        e.set_param("subdiv", SCALE_MAP[self.scale_v.get()])
+        steps = apply_play_mode([dict(s) for s in self.steps],
+                                PLAYMODES[self.playmode_v.get()])
+        e.set_pattern([(s["note"], s["accent"], s["slide"]) for s in steps])
+
+    _RT_PARAM = {"shuffle": "swing"}            # studio name -> engine name
+
+    def _push_param(self, name):
+        """Push a SINGLE parameter to the engine (negligible cost, instant response)."""
+        e = self.rt
+        if e is None:
+            return
+        if name == "waveform":
+            e.set_param("waveform", self.waveform)
+        elif name in self.kv:
+            e.set_param(self._RT_PARAM.get(name, name), self.kv[name])
+
+    def _push_pattern(self):
+        e = self.rt
+        if e is None:
+            return
+        steps = apply_play_mode([dict(s) for s in self.steps],
+                                PLAYMODES[self.playmode_v.get()])
+        e.set_pattern([(s["note"], s["accent"], s["slide"]) for s in steps])
+
+    def _knob_live(self, k):
+        """Knob moved: push audio RIGHT AWAY, redraw is coalesced."""
+        if self.mode == "rt" and self.rt is not None:
+            try:
+                self._push_param(k)             # audio first -> no latency
+            except Exception:
+                pass
+        elif self.playing and self.audio_ok:
+            self._play_loop()
+        self._schedule_refresh()
+
+    def _schedule_refresh(self):
+        """Coalesce redraws (~60 fps max): audio stays prioritized and immediate."""
+        if not getattr(self, "_refresh_pending", False):
+            self._refresh_pending = True
+            self.root.after(16, self._do_refresh)
+
+    def _do_refresh(self):
+        self._refresh_pending = False
+        self.refresh()
 
     def _make_combos(self):
         try:
@@ -269,7 +356,7 @@ class SkinStudio:
                 return
         px0, py0, px1, py1 = self.M["piano"]
         if px0 <= x <= px1 and py0 <= y <= py1:
-            self._piano_hit(x, px0, px1)
+            self._piano_hit(x, y, px0, py0, px1, py1)
             return
         C = self.M["cells"]
         for i, cx in enumerate(C["cx"]):
@@ -286,7 +373,7 @@ class SkinStudio:
         vmin, vmax = KNOB_SPEC[k][0], KNOB_SPEC[k][1]
         self.kv[k] = min(vmax, max(vmin, self.kv[k] - (y - lasty) * (vmax - vmin) / 150.0))
         self._drag = (k, y)
-        self._changed()
+        self._knob_live(k)
 
     def _wheel(self, e):
         x, y = self._to_img(e)
@@ -297,12 +384,23 @@ class SkinStudio:
         step = (vmax - vmin) / 40.0
         up = getattr(e, "num", None) == 4 or getattr(e, "delta", 0) > 0
         self.kv[k] = min(vmax, max(vmin, self.kv[k] + (step if up else -step)))
-        self._changed()
+        self._knob_live(k)
 
-    def _piano_hit(self, x, px0, px1):
-        whites = [(w, o) for o in (1, 2, 3) for w in ["C", "D", "E", "F", "G", "A", "B"]]
-        idx = min(len(whites) - 1, max(0, int((x - px0) / (px1 - px0) * len(whites))))
-        self._set_note(f"{whites[idx][0]}{whites[idx][1]}")
+    def _piano_hit(self, x, y, px0, py0, px1, py1):
+        letters = "CDEFGAB"
+        nwhite = 21                              # 3 octaves of white keys (C..B x3)
+        ww = (px1 - px0) / nwhite
+        wi = min(nwhite - 1, max(0, int((x - px0) / ww)))
+        # black keys live on the upper ~60% of the keyboard, centered on the boundary
+        # after C, D, F, G, A (white letter index 0,1,3,4,5 -> C#,D#,F#,G#,A#)
+        if y <= py0 + 0.60 * (py1 - py0):
+            for cand in (wi, wi - 1):
+                if 0 <= cand < nwhite - 1 and (cand % 7) in (0, 1, 3, 4, 5):
+                    center = px0 + (cand + 1) * ww
+                    if abs(x - center) <= 0.32 * ww:
+                        self._set_note(f"{letters[cand % 7]}#{1 + cand // 7}")
+                        return
+        self._set_note(f"{letters[wi % 7]}{1 + wi // 7}")
 
     def _button(self, name):
         {"run": self._toggle_run, "stop": self._stop,
@@ -357,7 +455,15 @@ class SkinStudio:
         return np.clip(a * self.kv["volume"] / 0.9, -1, 1)
 
     def _preview(self, note):
-        if not self.audio_ok or not note:
+        if not note:
+            return
+        if not self._is303():
+            self._preview_instr(note)
+            return
+        if not self.audio_ok:
+            return
+        if self.mode == "rt" and self.rt is not None:
+            self.rt.preview(note)               # real-time audition
             return
         try:
             p = self._params()
@@ -371,8 +477,17 @@ class SkinStudio:
 
     def _changed(self):
         self.refresh()
-        if self.playing and self.audio_ok:
-            self._play_loop()
+        if not self._is303():
+            if self.playing:
+                self._play_instr()
+            return
+        if self.mode == "rt" and self.rt is not None:
+            try:
+                self._push_rt()                   # real-time: instant update
+            except Exception as e:
+                self.audio_err = f"push KO ({e})"
+        elif self.playing and self.audio_ok:
+            self._play_loop()                     # pygame: re-render the loop
 
     def _play_loop(self):
         try:
@@ -387,14 +502,26 @@ class SkinStudio:
             self.refresh()
 
     def _toggle_run(self):
+        if not self._is303():
+            self._toggle_instr()
+            return
         if not self.audio_ok:
             messagebox.showinfo(
-                "Audio indisponible",
-                "Le moteur audio n'est pas actif : " + (self.audio_err or "pygame manquant") + ".\n\n"
-                "RUN n'a donc rien a jouer (le bouton fonctionne, mais il n'y a pas de son).\n\n"
-                "Dans le terminal ou tu lances le script :\n"
-                "    pip install pygame\n"
-                "puis relance.  (SAVE WAV fonctionne sans pygame.)")
+                "Audio unavailable",
+                "The audio engine is not active: " + (self.audio_err or "pygame missing") + ".\n\n"
+                "So RUN has nothing to play (the button works, there is just no sound).\n\n"
+                "In the terminal where you launch the script:\n"
+                "    pip install pygame   (ou : pip install sounddevice numba)\n"
+                "then relaunch.  (SAVE WAV works without audio.)")
+            return
+        if self.mode == "rt":
+            self.playing = not self.playing
+            if self.playing:
+                self._push_rt()
+                self.rt.set_playing(True)
+            else:
+                self.rt.set_playing(False)
+            self.refresh()
             return
         if self.playing:
             self._stop()
@@ -405,19 +532,126 @@ class SkinStudio:
 
     def _stop(self):
         self.playing = False
-        if self.audio_ok:
+        if not self._is303():
+            if _HAS_PYGAME and pygame.mixer.get_init():
+                pygame.mixer.stop()
+        elif self.mode == "rt" and self.rt is not None:
+            self.rt.set_playing(False)
+        elif self.audio_ok and _HAS_PYGAME:
             pygame.mixer.stop()
         self.refresh()
+
+    def close(self):
+        try:
+            if self.rt is not None:
+                self.rt.stop()
+        except Exception:
+            pass
+
+    # ---------- instruments (non-303 voices) ----------
+    def _is303(self):
+        return self.instrument == "TB-303"
+
+    def _voice(self):
+        if self.instrument in instruments.BUILTIN:
+            return instruments.BUILTIN[self.instrument]
+        if self.instrument == "Sample" and self.sampler is not None:
+            return self.sampler.note
+        return None
+
+    def _ensure_pygame(self):
+        if not _HAS_PYGAME:
+            return False
+        if not pygame.mixer.get_init():
+            if os.path.exists("/mnt/wslg/PulseServer"):
+                os.environ.setdefault("SDL_AUDIODRIVER", "pulseaudio")
+                os.environ["PULSE_SERVER"] = "unix:/mnt/wslg/PulseServer"
+            try:
+                pygame.mixer.init(frequency=self.SR, size=-16, channels=2)
+            except Exception:
+                return False
+        return True
+
+    def _set_instrument(self, name):
+        was = self.playing
+        self._stop()
+        self.instrument = name
+        self._instr_var.set(name if name in (("TB-303",) + tuple(instruments.BUILTIN)) else "TB-303")
+        if was:
+            self._toggle_run()
+        self.refresh()
+
+    def _load_sample(self):
+        path = filedialog.askopenfilename(filetypes=[("WAV", "*.wav"), ("All", "*.*")])
+        if not path:
+            return
+        try:
+            self.sampler = instruments.Sampler.from_wav(path)
+        except Exception as e:
+            messagebox.showerror("Cannot load sample", str(e))
+            return
+        self._set_instrument("Sample")
+
+    def _render_instr(self, repeats):
+        v = self._voice()
+        if v is None:
+            return np.zeros((1, 2))
+        a = instruments.render_pattern(
+            self.steps, v, bpm=int(self.kv["bpm"]), subdiv=SCALE_MAP[self.scale_v.get()],
+            swing=self.kv["shuffle"], play_mode=PLAYMODES[self.playmode_v.get()],
+            repeats=repeats, tuning=self.kv["tuning"])
+        return np.clip(a * self.kv["volume"], -1, 1)
+
+    def _play_instr(self):
+        if not self._ensure_pygame():
+            return
+        try:
+            a = self._render_instr(1)
+            pygame.mixer.stop()
+            self._snd = pygame.sndarray.make_sound(
+                np.ascontiguousarray((a * 32767).astype(np.int16)))
+            self._snd.play(loops=-1)
+        except Exception as e:
+            self.playing = False
+            self.audio_err = f"instr KO ({e})"
+
+    def _toggle_instr(self):
+        if not self._ensure_pygame():
+            messagebox.showinfo("Audio", "Instrument playback needs pygame:\n    pip install pygame")
+            return
+        if self.mode == "rt" and self.rt is not None:
+            self.rt.set_playing(False)
+        self.playing = not self.playing
+        if self.playing:
+            self._play_instr()
+        elif pygame.mixer.get_init():
+            pygame.mixer.stop()
+        self.refresh()
+
+    def _preview_instr(self, note):
+        if not self._ensure_pygame():
+            return
+        v = self._voice()
+        if v is None:
+            return
+        try:
+            n = v(instruments.note_to_freq(note, self.kv["tuning"]), 0.4, False)
+            a = np.clip(n * self.kv["volume"], -1, 1)
+            self._ps = pygame.sndarray.make_sound(
+                np.ascontiguousarray((np.column_stack([a, a]) * 32767).astype(np.int16)))
+            self._ps.play()
+        except Exception:
+            pass
 
     def _save(self):
         path = filedialog.asksaveasfilename(defaultextension=".wav",
                                             filetypes=[("WAV", "*.wav")], initialfile="tb303.wav")
         if path:
-            self.tb.write_wav(self._render(4), path)
+            self.tb.write_wav(self._render(4) if self._is303() else self._render_instr(4), path)
 
-    # ---------- projet .tb303 (etat complet, rappelable) ----------
+    # ---------- .tb303 project (full, recallable state) ----------
     def _project_state(self):
-        self.banks[self.cur_bank] = [dict(s) for s in self.steps]   # fige la banque courante
+        self.banks[self.cur_bank] = [dict(s) for s in self.steps]   # freeze current bank
         return {
             "format": "tb303-studio", "version": 1,
             "knobs": {k: round(float(v), 4) for k, v in self.kv.items()},
@@ -463,7 +697,7 @@ class SkinStudio:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(self._project_state(), f, indent=1, ensure_ascii=False)
         except Exception as e:
-            messagebox.showerror("Sauvegarde impossible", str(e))
+            messagebox.showerror("Cannot save", str(e))
 
     def _load_project(self):
         path = filedialog.askopenfilename(
@@ -474,10 +708,10 @@ class SkinStudio:
             with open(path, "r", encoding="utf-8") as f:
                 st = json.load(f)
             if st.get("format") != "tb303-studio":
-                raise ValueError("Ce fichier n'est pas un projet TB-303.")
+                raise ValueError("This file is not a TB-303 project.")
             self._apply_project(st)
         except Exception as e:
-            messagebox.showerror("Ouverture impossible", str(e))
+            messagebox.showerror("Cannot open", str(e))
 
     def _clear(self):
         for s in self.steps:
@@ -493,7 +727,13 @@ def main():
     if not os.path.exists(image):
         raise SystemExit(f"Image introuvable : {image}")
     root = tk.Tk()
-    SkinStudio(root, image)
+    app = SkinStudio(root, image)
+
+    def _on_close():
+        app.close()
+        root.destroy()
+
+    root.protocol("WM_DELETE_WINDOW", _on_close)
     root.mainloop()
 
 
