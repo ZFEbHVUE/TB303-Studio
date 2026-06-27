@@ -6,7 +6,11 @@ Used by the studio when the chosen instrument isn't the TB-303 synth. Pure NumPy
 (SciPy optional, only for nicer filtering); renders a whole pattern to a buffer that
 the studio loops (pygame) and exports (WAV).
 """
+import os
 import wave
+import shutil
+import tempfile
+import subprocess
 import numpy as np
 
 try:
@@ -43,20 +47,135 @@ def _adsr(n, sr, atk=0.02, rel=0.06, curve=1.4):
     return env
 
 
-def load_wav(path, sr=SR):
-    """Load a WAV as mono float (resampled to sr by linear interpolation)."""
-    w = wave.open(path, "rb")
-    fr, ch, n, sw = w.getframerate(), w.getnchannels(), w.getnframes(), w.getsampwidth()
-    raw = w.readframes(n); w.close()
-    dt = {1: np.int8, 2: np.int16, 4: np.int32}[sw]
-    a = np.frombuffer(raw, dtype=dt).astype(np.float64)
-    if ch > 1:
-        a = a.reshape(-1, ch).mean(axis=1)
-    a /= (2 ** (8 * sw - 1))
-    if fr != sr:
+def _resample(a, fr, sr):
+    if fr and fr != sr:
         t = np.linspace(0, len(a) / fr, int(len(a) / fr * sr), endpoint=False)
         a = np.interp(t, np.arange(len(a)) / fr, a)
     return a
+
+
+def _load_wav_builtin(path, sr=SR):
+    """Read a WAV of any common depth (8/16/24/32-bit PCM or float32) as mono float.
+    Used as the no-dependency fallback; the stdlib wave module cannot read 24-bit."""
+    import struct
+    b = open(path, "rb").read()
+    if b[:4] != b"RIFF" or b[8:12] != b"WAVE":
+        raise ValueError("not a WAV file")
+    fmt = ch = fr = bits = None
+    data = None
+    i = 12
+    while i + 8 <= len(b):
+        cid = b[i:i + 4]
+        sz = struct.unpack("<I", b[i + 4:i + 8])[0]
+        body = b[i + 8:i + 8 + sz]
+        if cid == b"fmt ":
+            fmt, ch, fr, _br, _ba, bits = struct.unpack("<HHIIHH", body[:16])
+        elif cid == b"data":
+            data = body
+        i += 8 + sz + (sz & 1)
+    if data is None or fmt is None:
+        raise ValueError("WAV missing fmt/data chunk")
+    raw = np.frombuffer(data, dtype=np.uint8)
+    if bits == 8:
+        a = (raw.astype(np.float64) - 128) / 128.0
+    elif bits == 16:
+        a = np.frombuffer(data, dtype="<i2").astype(np.float64) / 32768.0
+    elif bits == 24:
+        v = raw[: (len(raw) // 3) * 3].reshape(-1, 3)
+        x = (v[:, 0].astype(np.int32) | (v[:, 1].astype(np.int32) << 8)
+             | (v[:, 2].astype(np.int32) << 16))
+        x = np.where(x & 0x800000, x - 0x1000000, x)
+        a = x.astype(np.float64) / (2 ** 23)
+    elif bits == 32 and fmt == 3:
+        a = np.frombuffer(data, dtype="<f4").astype(np.float64)
+    elif bits == 32:
+        a = np.frombuffer(data, dtype="<i4").astype(np.float64) / (2 ** 31)
+    else:
+        raise ValueError(f"unsupported WAV depth: {bits}-bit (fmt {fmt})")
+    if ch and ch > 1:
+        a = a[: (len(a) // ch) * ch].reshape(-1, ch).mean(axis=1)
+    return _resample(a, fr, sr)
+
+
+def _ffmpeg_decode(path, sr=SR):
+    """Decode any audio file to mono float via ffmpeg (mp3, flac, ogg, m4a, aiff...)."""
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        return None
+    tmp = tempfile.mktemp(suffix=".wav")
+    try:
+        subprocess.run([exe, "-y", "-i", path, "-ac", "1", "-ar", str(sr),
+                        "-c:a", "pcm_s16le", "-f", "wav", tmp],
+                       capture_output=True, check=True)
+        return _load_wav_builtin(tmp, sr)
+    except Exception:
+        return None
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
+def load_audio(path, sr=SR):
+    """Load *any* audio format as mono float at sr.
+    Order: soundfile (WAV/FLAC/OGG/AIFF/...) -> ffmpeg (mp3/m4a/anything) -> builtin WAV."""
+    try:
+        import soundfile as sf
+        a, fr = sf.read(path, always_2d=True, dtype="float64")
+        return _resample(a.mean(axis=1), fr, sr)
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    a = _ffmpeg_decode(path, sr)
+    if a is not None:
+        return a
+    return _load_wav_builtin(path, sr)
+
+
+# kept for compatibility (Sampler.from_wav and existing callers)
+def load_wav(path, sr=SR):
+    return load_audio(path, sr)
+
+
+def _write_wav16(audio, path, sr=SR):
+    a = np.clip(np.asarray(audio, dtype=np.float64), -1, 1)
+    ch = 2 if (a.ndim == 2 and a.shape[1] == 2) else 1
+    w = wave.open(path, "w")
+    w.setnchannels(ch); w.setsampwidth(2); w.setframerate(sr)
+    w.writeframes((a * 32767).astype("<i2").tobytes())
+    w.close()
+
+
+def write_audio(audio, path, sr=SR):
+    """Write audio to *any* format chosen by extension.
+    WAV is written natively; FLAC/OGG/AIFF via soundfile; mp3/anything via ffmpeg."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ("", ".wav"):
+        _write_wav16(audio, path, sr)
+        return
+    try:
+        import soundfile as sf
+        sf.write(path, np.clip(np.asarray(audio), -1, 1), sr)
+        return
+    except ImportError:
+        pass
+    except Exception:
+        pass
+    exe = shutil.which("ffmpeg")
+    if exe:
+        tmp = tempfile.mktemp(suffix=".wav")
+        _write_wav16(audio, tmp, sr)
+        try:
+            subprocess.run([exe, "-y", "-i", tmp, path], capture_output=True, check=True)
+            return
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    raise RuntimeError(f"to export {ext}, install soundfile or ffmpeg")
 
 
 def detect_f0(a, sr=SR, lo=50, hi=1000):
@@ -129,9 +248,61 @@ class Sampler:
 
 
 # ---------------------------------------------------------------- pattern render
+def _biquad_lp(fc, Q, sr):
+    w0 = 2 * np.pi * min(fc, sr * 0.45) / sr
+    cosw, sinw = np.cos(w0), np.sin(w0)
+    alpha = sinw / (2 * max(0.5, Q))
+    b0 = (1 - cosw) / 2; b1 = 1 - cosw; b2 = (1 - cosw) / 2
+    a0 = 1 + alpha; a1 = -2 * cosw; a2 = 1 - alpha
+    return (np.array([b0 / a0, b1 / a0, b2 / a0]), np.array([1.0, a1 / a0, a2 / a0]))
+
+
+def _reso_filter(note, cutoff, resonance, env_mod, decay, distortion, accent, sr=SR):
+    """Run a voice through a 303-style resonant low-pass swept by a per-note envelope,
+    plus optional tanh distortion. Makes CUT OFF / RESONANCE / ENV MOD / DECAY / DIST
+    affect sampled or synthetic instruments too. cutoff=None -> bypass."""
+    if cutoff is None:
+        return note
+    n = len(note)
+    if n < 8:
+        return note
+    if not _HAS_SCIPY:                                # no resonance without scipy
+        out = note
+        if distortion > 0:
+            d = 1 + distortion * 6
+            out = np.tanh(out * d) / np.tanh(d)
+        return out
+    from scipy.signal import lfilter, lfilter_zi
+    Q = 0.6 + resonance * 7.0
+    tau = 0.03 + decay * 0.6
+    acc = 0.18 if accent else 0.0
+    blk = max(128, int(0.012 * sr))                  # ~12 ms blocks for the sweep
+    out = np.empty_like(note)
+    zi = None
+    t = 0.0
+    for s in range(0, n, blk):
+        e = np.exp(-t / tau)
+        cn = min(1.0, max(0.0, cutoff + env_mod * e + acc))
+        fc = 180.0 + 11800.0 * (cn ** 2)             # mostly open mid/high, darkens low
+        b, a = _biquad_lp(fc, Q, sr)
+        seg = note[s:s + blk]
+        if zi is None:
+            zi = lfilter_zi(b, a) * seg[0]
+        y, zi = lfilter(b, a, seg, zi=zi)
+        out[s:s + len(seg)] = y
+        t += len(seg) / sr
+    if distortion > 0:
+        d = 1 + distortion * 6
+        out = np.tanh(out * d) / np.tanh(d)
+    return out
+
+
 def render_pattern(steps, voice, bpm=130, subdiv=4, swing=0.0, play_mode="forward",
-                   repeats=1, gate_len=0.6, tuning=440.0, sr=SR):
-    """voice: callable(freq, dur, accent) -> mono array (synth_sax/brass or Sampler.note)."""
+                   repeats=1, gate_len=0.6, tuning=440.0, sr=SR,
+                   cutoff=None, resonance=0.0, env_mod=0.0, decay=0.5, distortion=0.0):
+    """voice: callable(freq, dur, accent) -> mono array (synth_sax/brass or Sampler.note).
+    If cutoff is given, each note is run through a resonant low-pass + distortion so the
+    filter knobs act on the instrument too."""
     seq = apply_play_mode([dict(s) for s in steps], play_mode) * repeats
     if not seq:
         return np.zeros((0, 2))
@@ -144,8 +315,10 @@ def render_pattern(steps, voice, bpm=130, subdiv=4, swing=0.0, play_mode="forwar
         sd = step * (1 + swing) if i % 2 == 0 else step * (1 - swing)
         if st.get("note") and st["note"] not in (".", ""):
             f = note_to_freq(st["note"], tuning)
+            acc = st.get("accent", False)
             dur = sd * (1.0 if st.get("slide") else gate_len) + 0.02
-            note = voice(f, dur, st.get("accent", False))
+            note = voice(f, dur, acc)
+            note = _reso_filter(note, cutoff, resonance, env_mod, decay, distortion, acc, sr)
             a = int(pos * sr)
             buf[a:a + len(note)] += note[: max(0, total - a)]
         pos += sd

@@ -235,6 +235,7 @@ class RealtimeEngine:
         self.nsteps = 16
         self._lock = threading.Lock()
         self.stream = None
+        self.level = 0.0                         # smoothed output level for VU meters
         # default values
         d = {"cutoff": 0.4, "resonance": 0.5, "env_mod": 0.5, "decay": 0.4,
              "accent": 0.5, "bpm": 130, "distortion": 0.0, "volume": 0.9,
@@ -290,8 +291,13 @@ class RealtimeEngine:
             synth_block(buf, frames, self.state, self.params,
                         self.pat_f, self.pat_a, self.pat_s, self.nsteps, float(self.sr))
         np.clip(buf, -1.0, 1.0, out=buf)
+        peak = float(np.abs(buf).max())
+        self.level = peak if peak > self.level else self.level * 0.82   # fast rise, slow fall
         outdata[:, 0] = buf
         outdata[:, 1] = buf
+
+    def get_level(self):
+        return self.level
 
     def start(self):
         import sounddevice as sd

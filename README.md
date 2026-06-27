@@ -5,498 +5,266 @@
 ![TB303-Studio GUI](docs/gui_main.png)
 
 An *acid* bass synthesizer inspired by the Roland TB-303, written in pure Python
-(NumPy), with a graphical interface "skinned" by an image (a steampunk panel).
-The audio engine runs oscillator → resonant low-pass filter → envelopes →
-16-step sequencer, and the interface overlays functional controls onto the image.
-It plays in **real time** (turn a knob, hear it instantly) when Numba + sounddevice
-are available, and otherwise falls back to a pygame loop.
+(NumPy). It comes with an image-skinned steampunk interface, a real-time audio engine,
+a sampler that can play **real instruments** (sax, drums, anything you load), and a
+second interface designed for **15 kHz arcade CRTs**.
 
 > **Technical honesty.** This is **not** a component-accurate clone of the TB-303
-> circuit. It is a **character emulation**: it reproduces the spirit (anti-aliased
-> saw/square oscillator, resonant ~18 dB/oct ladder filter swept by the envelope,
-> accent, slide, sequencer with swing) but the original schematic is approximated,
-> not copied. No Roland branding, logo, or sample is used — the panel design is original.
-
-## Table of contents
-
-1. [Folder contents](#folder-contents)
-2. [Requirements and installation](#requirements-and-installation)
-3. [Quick start](#quick-start)
-4. [The interface](#the-interface)
-5. [Programming a pattern](#programming-a-pattern)
-6. [Save and recall a project (`.tb303`)](#save-and-recall-a-project-tb303)
-7. [Knob reference](#knob-reference)
-8. [Menus: Scale, Play Mode, Preset](#menus-scale-play-mode-preset)
-9. [The synthesis engine](#the-synthesis-engine)
-10. [Real-time engine (`tb303_rt.py`)](#real-time-engine-tb303_rtpy)
-11. [Pattern notation](#pattern-notation)
-12. [Using the engine as a library](#using-the-engine-as-a-library)
-13. [The skin system (image + coordinate map)](#the-skin-system-image--coordinate-map)
-14. [Creating a new skin](#creating-a-new-skin)
-15. [Troubleshooting](#troubleshooting)
-16. [File-by-file notes](#file-by-file-notes)
+> circuit. It is a **character emulation**: anti-aliased saw/square oscillator, a
+> resonant ~18 dB/oct ladder filter swept by the envelope, accent, slide, and a
+> sequencer with swing. The panel art is original — no Roland branding, logo, or sample.
 
 ---
 
-## Folder contents
+## What's included
 
 | File | Role |
 |---|---|
-| `tb303.py` | Offline synthesis engine + sequencer (NumPy only). No GUI dependency. Used for WAV export. |
-| `tb303_rt.py` | **Real-time** engine (sounddevice callback + Numba-compiled DSP). Drives live playback. |
-| `tb303_studio.py` | Graphical "skin" interface: loads the image and overlays the controls. |
-| `tb303_skin.png` | Skin image (steampunk panel, with the step cells and value fields blanked). |
+| `tb303.py` | Offline synthesis engine + sequencer (NumPy only). Used for WAV export. |
+| `tb303_rt.py` | **Real-time** TB-303 engine (sounddevice callback + Numba DSP). Live knobs. |
+| `tb303_studio-v2.0.py` | Main GUI: the steampunk image skin with all controls overlaid. |
+| `tb303_skin.png` | The skin image (steampunk panel). |
+| `instruments.py` | Non-303 voices: a **sampler** + synthetic sax/brass, with a resonant filter. |
+| `instruments_rt.py` | **Real-time** engine for the instruments (sample playback + 303 filter). |
+| `tb303_crt.py` | A separate **640x480 vector interface** for CRT/arcade screens (multi-theme). |
 
-`tb303_studio.py`, `tb303.py`, `tb303_rt.py` and `tb303_skin.png` must sit in the **same
-folder**. The studio imports both engines and loads `tb303_skin.png` by default.
+All files must live in the **same folder**.
+
+---
+
+## What this project can do (feature tour)
+
+**The synth.** Saw/square oscillator -> 303-style 4-pole ladder filter (output tapped at
+the 3rd pole, ~18 dB/oct, 4th-pole resonance feedback with tanh saturation) -> filter and
+amp envelopes -> accent, slide, distortion. A 16-step sequencer with banks, subdivisions,
+swing and play modes.
+
+**Real-time playback.** With Numba + sounddevice, audio is generated continuously block
+by block; turning a knob is heard **instantly**, with no loop restart. Without them, it
+falls back to a pygame render-and-loop. The TB-303 *and* the instruments each have their
+own real-time engine.
+
+**Play other instruments, not just the 303.** An **Instrument** menu lets you switch the
+voice to a synthetic **Sax** or **Brass**, or **load your own sample** (a real sax, a
+piano, anything). The sample is replayed at the right pitch for every note of the
+sequence, and it runs through the **same resonant 303 filter**, so CUT OFF / RESONANCE /
+ENV MOD / DECAY / DIST shape your sax exactly like the 303 (you can make an *acid sax*).
+The instruments play in real time too.
+
+**Load and save in any format.** Loading a sample accepts **WAV, MP3, FLAC, OGG, AIFF,
+M4A, AAC, OPUS, WMA** (via `soundfile`/`ffmpeg`, with a built-in WAV reader as fallback,
+including 24-bit). Exporting audio likewise offers **WAV, FLAC, OGG, MP3, AIFF**.
+
+**Live VU meters.** The steampunk lamps on the panel are wired as VU meters: the glass of
+each bulb **brightens with the music** (dark on silence, blazing on hits) — the glow is
+confined to the bulb, no halo.
+
+**Editable projects.** Save the whole session (all knobs, waveform, menus, the 8 pattern
+banks) to a `name.tb303` file and reload it later, exactly as it was.
+
+**A CRT interface.** `tb303_crt.py` is an alternate UI drawn entirely with vector shapes
+(no image), sized 640x480 for 15 kHz interlaced arcade monitors, with two themes
+(**arcade neon** and **cyberpunk**), switchable live.
 
 ---
 
 ## Requirements and installation
 
-### Dependencies
-
-| Package | Why | Required? |
+| Package | Why | Needed for |
 |---|---|---|
-| **NumPy** | Audio synthesis | Yes |
-| **Pillow** (+ ImageTk) | Load and display the skin image | Yes (for the GUI) |
-| **Tkinter** | Window and widgets | Yes (usually preinstalled) |
-| **numba** | Compiles the real-time DSP (so it can keep up with live audio) | For real-time mode |
-| **sounddevice** | Real-time audio output | For real-time mode |
-| **pygame** | Fallback audio playback when real-time isn't available | Optional fallback |
+| **NumPy** | Synthesis | always |
+| **Pillow** (+ ImageTk) | Show the skin image | the GUI |
+| **Tkinter** | Window and widgets | the GUI (usually preinstalled) |
+| **numba** | Compiles the real-time DSP | real-time mode |
+| **sounddevice** | Real-time audio output | real-time mode |
+| **pygame** | Fallback playback when real-time is unavailable | optional fallback |
+| **scipy** | Nicer filtering for the synthetic instruments | optional |
+| **soundfile** / **ffmpeg** | Load/save MP3/FLAC/OGG/M4A... | non-WAV formats |
 
-There are **two audio paths**, and the studio chooses automatically at startup:
-
-- **Real-time** (recommended): needs **numba + sounddevice** (and `libportaudio2` on
-  Linux). Knob changes are heard instantly while playing.
-- **Fallback**: if numba isn't present, the studio uses **pygame** instead (it renders
-  the loop and replays it). Works fine, but knob changes restart the loop.
-
-Either way **SAVE WAV** works (it uses the offline engine).
-
-### Installing — the golden rule
-
-Install into the **same Python that runs the script**. The safest way:
+Install into the **same Python that runs the script**:
 
 ```bash
-python3 -m pip install numpy pillow numba sounddevice pygame
+python3 -m pip install numpy pillow numba sounddevice pygame scipy soundfile
+sudo apt install libportaudio2          # Linux: needed by sounddevice
+sudo apt install ffmpeg                  # optional: lets you load/save any audio format
 ```
 
-On Linux, also install the PortAudio system library that sounddevice needs:
+**Ubuntu (system Python)** — also get ImageTk and Tk:
 
 ```bash
-sudo apt install libportaudio2
+sudo apt install python3-pil.imagetk python3-tk
 ```
 
-Using `python3 -m pip` guarantees the packages land in the exact interpreter that
-`python3 tb303_studio.py` uses — no need to wonder which environment you're in.
-
-> **Environment gotcha.** numba/sounddevice must live in the environment you launch
-> from. If you installed them inside a conda env (say `xtts`), then either launch from
-> that env (`conda activate xtts`) or install them in your base/default env so you don't
-> have to activate anything. Nothing in this project depends on a specific env — it's
-> only about where the packages are installed.
-
-### Per platform
-
-**Ubuntu / Debian (system Python).** apt targets the system `python3` and provides
-`ImageTk` (often missing with pip alone):
-
-```bash
-sudo apt install python3-numpy python3-pygame python3-pil python3-pil.imagetk python3-tk libportaudio2
-pip install numba sounddevice            # for real-time mode
-```
-
-> The **`python3-pil.imagetk`** package matters: it provides `ImageTk`. Without it,
-> Pillow alone is not enough with Tkinter and the window won't display.
-
-If pip refuses with "externally-managed-environment" (recent Ubuntu), add
-`--break-system-packages` or use a virtualenv/conda env.
-
-**WSL / WSLg (Windows).** Audio goes through WSLg/PulseAudio. **No variable to set by
-hand**: at startup both engines detect `/mnt/wslg/PulseServer` and wire the right
-`PULSE_SERVER` automatically. For real-time on WSL you may also need ALSA routed to
-PulseAudio once:
-
-```bash
-sudo apt install libasound2-plugins pulseaudio-utils libportaudio2
-printf 'pcm.!default { type pulse }\nctl.!default { type pulse }\n' > ~/.asoundrc
-```
-
-### Verify the install
-
-```bash
-python3 -c "import sys, numpy, PIL; print(sys.executable)"
-python3 -c "import numba, sounddevice; print('real-time ready')"   # optional
-```
-
-If the second line prints without error, the studio will start in real-time mode.
+> **Environment note.** numba/sounddevice must be in the env you launch from. If you
+> installed them in a conda env (e.g. `xtts`), either launch from it or install them in
+> your base env. Nothing in this project depends on a specific env.
 
 ---
 
 ## Quick start
 
 ```bash
-python3 tb303_studio.py
+python3 tb303_studio-v2.0.py            # main steampunk studio
+python3 tb303_crt.py               # CRT interface (arcade neon)
+python3 tb303_crt.py cyber         # CRT interface (cyberpunk)
 ```
 
-On launch, the interface already shows the demo pattern. **Click RUN** to play, and turn
-the knobs while it plays. To load a different skin image:
-
-```bash
-python3 tb303_studio.py my_other_skin.png
-```
-
-> First RUN in real-time mode may take ~1 s the very first time, while Numba compiles the
-> DSP. After that it's instant.
+The demo pattern is loaded on launch — press **RUN** (or Space on the CRT) and turn the
+knobs while it plays.
 
 ---
 
 ## The interface
 
-Everything is clickable directly on the image.
+Everything is clickable on the image: the **WAVEFORM** toggle, the **10 knobs**
+(TUNING, CUT OFF, RESONANCE, ENV MOD, DECAY, ACCENT, TEMPO, DIST, VOLUME, SHUFFLE),
+the **SCALE / PLAY MODE / PRESET** menus, **PATTERN 1-8** banks, **RUN/STOP**, the
+3-octave **keyboard** (with working black keys/sharps), the per-step modifiers
+**ACCENT / SLIDE / OCT down / OCT up / REST**, the **16-step** strip, and **SAVE WAV /
+CLEAR / DEMO**. Adjust a knob with the mouse wheel or a vertical drag.
 
-- **WAVEFORM (saw / sqr)** — selects the oscillator waveform (sawtooth or square).
-- **Top 6 knobs** — TUNING, CUT OFF, RESONANCE, ENV MOD, DECAY, ACCENT.
-- **Bottom 4 knobs** — TEMPO, DIST (distortion), VOLUME, SHUFFLE.
-- **SCALE / PLAY MODE / PRESET** — three dropdown menus.
-- **PATTERN 1–8** — eight independent pattern banks.
-- **RUN / STOP** — loop playback / stop.
-- **Keyboard** — click a key to place a note on the selected step (and audition it).
-- **ACCENT / SLIDE / OCT↓ / OCT↑ / REST** — modifiers for the selected step.
-- **16-cell strip** — the sequencer's 16 steps; click a cell to select it (amber frame).
-  Each cell shows its live note (e.g. `C2`, with `+` for accent, `~` for slide).
-- **SAVE WAV / CLEAR / DEMO** — export to .wav / clear everything / reload the demo.
+### Programming a pattern
 
-**Adjusting a knob:** mouse wheel over it, or click-and-drag vertically. In real-time
-mode the sound follows your gesture immediately.
+1. Click a **cell** in the 16-step strip (amber frame = selected).
+2. Click a **key** -> the note lands on that step (and sounds), selection advances.
+3. Select a step, then **ACCENT** (`+`, louder/brighter), **SLIDE** (`~`, glide to the
+   next note), **OCT down/up**, or **REST** (silence).
+4. **PATTERN 1-8**: eight independent banks. **CLEAR** empties; **DEMO** reloads the example.
+5. **RUN** loops; turn the knobs *while playing* — they update live.
+
+### Knob reference
+
+| Knob | Range | Default | Effect |
+|---|---|---|---|
+| TUNING | 400-480 | 440 | Fine global tuning. |
+| CUT OFF | 0-1 | 0.40 | Filter cutoff (opens/closes the tone). |
+| RESONANCE | 0-1 | 0.10 | Resonant peak at the cutoff (the acid squelch). |
+| ENV MOD | 0-1 | 0.12 | How much the envelope opens the filter per note. |
+| DECAY | 0-1 | 0.40 | Length of the per-note filter sweep. |
+| ACCENT | 0-1 | 0.30 | Intensity of accented (`+`) steps. |
+| TEMPO | 60-200 | 130 | BPM. |
+| DIST | 0-1 | 0.00 | Saturation after the filter. |
+| VOLUME | 0-1 | 0.90 | Output level (playback and export). |
+| SHUFFLE | 0-0.66 | 0.00 | Swing on alternate steps. |
+
+**The acid recipe:** high RESONANCE + low CUT OFF + high ENV MOD, then sweep CUT OFF while
+it plays.
 
 ---
 
-## Programming a pattern
+## Instruments (sax, samples, drums...)
 
-1. **Click a cell** in the 16-step strip (it gets an amber frame).
-2. **Click a key** on the keyboard → the note lands on that step (and sounds), and the
-   selection advances to the next step. (So you can chain notes on the keyboard.)
-3. To edit a specific step, select it, then:
-   - **ACCENT** → accents the step (louder, filter opens more). Marked `+`.
-   - **SLIDE** → glide to the next note (legato/portamento). Marked `~`.
-   - **OCT↓ / OCT↑** → move the note down / up one octave.
-   - **REST** → silence (clears the step's note).
-4. **PATTERN 1–8**: eight banks. Switching banks saves the current one and loads the
-   other — handy for A/B comparisons or building a track.
-5. **CLEAR** empties the current pattern; **DEMO** reloads the example pattern.
-6. **RUN** plays in a loop; turn the knobs **while playing** and the sound updates live.
+Use the **Instrument** menu (in the studio's menu bar):
+
+- **TB-303** — the synth (default).
+- **Sax / Brass** — built-in synthetic voices (no file needed; recognizable, but synthetic).
+- **Load sample (.wav)...** — load your own audio (any format). It's replayed at the pitch
+  of every step.
+
+Whatever instrument is selected, the sound runs through the **303 resonant filter +
+distortion**, so all the filter knobs stay active — you can filter and saturate a real
+sax into an acid line. **SAVE WAV** exports with the chosen instrument.
+
+**Tips for samples.** The sampler is *melodic*: it works best with a **single sustained
+note** (a held sax/piano note), auto-detecting its base pitch. Stay within ~1-2 octaves of
+the original to keep the timbre natural. One-shot effects (whooshes, drums, risers) don't
+fit the melodic sampler well — they retrigger from the start on each step, so a short step
+only plays their beginning. (A dedicated one-shot/FX mode can be added if needed.)
+
+**Free, legal sounds.** The **VCSL** library (Versilian Community Sample Library) is
+**CC0 / public domain** and a great source of single-note instrument samples (sax, piano,
+harp, brass...). The bundled real tenor-sax note comes from VCSL.
 
 ---
 
 ## Save and recall a project (`.tb303`)
 
-Beyond exporting audio (WAV), you can save the **entire editable state** to a
-`name.tb303` project file and **reload it as-is** later — with exactly the same knob
-positions and all parameters.
-
-Via the **File** menu (top of the window) or shortcuts:
-
 | Action | Menu | Shortcut |
 |---|---|---|
-| Save the project | File → Save project… | **Ctrl+S** |
-| Reload a project | File → Open project… | **Ctrl+O** |
-| Export audio | File → Export WAV… (or the SAVE WAV button) | — |
+| Save project | File -> Save project... | **Ctrl+S** |
+| Open project | File -> Open project... | **Ctrl+O** |
+| Export audio | File -> Export WAV... / SAVE WAV | — |
 
-The `.tb303` file (human-readable JSON) contains: **all 10 knobs**, the **waveform**,
-the **Scale / Play Mode / Preset** menus, the **current bank**, and the **8 full
-pattern banks** (notes, accents, slides). Reopening it restores everything at once.
-
-> Don't confuse them: **SAVE WAV** exports the *sound* (not editable); **Save project**
-> stores the *session* (editable, replayable, tweakable).
+A `.tb303` file (human-readable JSON) stores all 10 knobs, the waveform, the
+Scale/Play Mode/Preset menus, the current bank, and the 8 full pattern banks.
 
 ---
 
-## Knob reference
+## The CRT interface (`tb303_crt.py`)
 
-| Knob | Range | Default | Effect |
-|---|---|---|---|
-| **TUNING** | 400–480 | 440 | Fine global tuning (≈ ±1.5 semitones). Shifts everything's pitch, subtly. |
-| **CUT OFF** | 0–1 | 0.40 | Filter cutoff frequency. Very audible: opens/closes the tone (30 Hz → 10 kHz). |
-| **RESONANCE** | 0–1 | 0.10 | Resonant peak at the cutoff. Pushed high, gives the acid "squelch" (up to near self-oscillation). |
-| **ENV MOD** | 0–1 | 0.12 | How much the envelope opens the filter on each note (the 303 "wow"). |
-| **DECAY** | 0–1 | 0.40 | Length of the per-note filter sweep (≈ 0.04 → 1.6 s). |
-| **ACCENT** | 0–1 | 0.30 | Intensity of accented steps. **Only affects steps marked `+`** (otherwise no effect — this is normal). |
-| **TEMPO** | 60–200 | 130 | Tempo in BPM. |
-| **DIST** | 0–1 | 0.00 | Saturation (tanh waveshaping) after the filter. Adds grit/growl. |
-| **VOLUME** | 0–1 | 0.90 | Output level (playback **and** export). |
-| **SHUFFLE** | 0–0.66 | 0.00 | Swing: offsets every other step for a shuffled groove. Most audible at 1/16. |
-
-**The winning acid combo:** high RESONANCE (0.8–1.0) + low CUT OFF (~0.3) + high ENV MOD,
-then sweep CUT OFF while it plays.
+A second UI drawn entirely with vector shapes (no image), fixed at **640x480** for
+15 kHz interlaced arcade monitors — bold shapes, high contrast, thick strokes, no thin
+hairlines that flicker when interlaced. Same engines, same controls, same `.tb303`
+projects. Two themes: **crt** (arcade neon) and **cyber** (cyberpunk). Launch with a theme
+(`python3 tb303_crt.py cyber`) or press **T** to switch live. Space = RUN/STOP.
 
 ---
 
-## Menus: Scale, Play Mode, Preset
+## Under the hood: the two real-time engines
 
-**SCALE** (step rhythmic subdivision):
+`tb303_rt.py` and `instruments_rt.py` share the same idea: a sounddevice callback fills
+the audio buffer block by block, reading the parameters and the pattern on **every block**,
+so a knob change is heard immediately. The per-sample DSP is compiled with **Numba**
+(`@njit`). `tb303_rt.py` synthesizes the 303 (oscillator + ladder); `instruments_rt.py`
+reads a **sample** at a pitch-dependent rate (linear interpolation, continuous position)
+and runs it through the **same ladder filter**. Only one audio stream runs at a time:
+switching between the 303 and an instrument hands the device from one engine to the other.
+Without Numba/sounddevice, both fall back to a pygame render-and-loop.
 
-| Choice | Steps per beat |
-|---|---|
-| 1/8 | 2 |
-| 1/8T | 3 (triplet) |
-| 1/16 | 4 |
-| 1/16T | 6 (triplet) |
-| 1/32 | 8 |
-
-**PLAY MODE** (playback order of the 16 steps): `Forward`, `Reverse`, `Fwd&Rev`
-(back-and-forth), `Invert` (flips high/low), `Random`.
-
-**PRESET** (quick starting points):
-
-| Preset | Wave | Cutoff | Reso | EnvMod | Decay | Accent | Dist |
-|---|---|---|---|---|---|---|---|
-| Classic Bass | square | 0.40 | 0.10 | 0.12 | 0.40 | 0.30 | 0.00 |
-| Acid | saw | 0.30 | 0.84 | 0.65 | 0.55 | 0.70 | 0.28 |
-| Sub Bass | square | 0.24 | 0.06 | 0.06 | 0.55 | 0.30 | 0.00 |
-| Rubber | saw | 0.36 | 0.45 | 0.35 | 0.45 | 0.45 | 0.00 |
-
----
-
-## The synthesis engine
-
-Signal chain, in order:
-
-1. **Oscillator** — sawtooth or square, anti-aliased with **PolyBLEP** (no metallic
-   aliasing on high notes).
-2. **303-style low-pass filter** — a **4-stage ladder** whose **output is tapped at the
-   3rd pole**, giving roughly an **18 dB/oct** slope (brighter and more nasal than a
-   Moog's 24 dB/oct — the 303 signature). **Feedback comes from the 4th pole** (the phase
-   shift needed to resonate), with **tanh saturation** on the input and the loop: the
-   resonance can rise toward self-oscillation, and the saturation provides the grit.
-3. **Filter envelope** — fast attack then a decay set by DECAY; how deeply it acts on
-   the cutoff is set by ENV MOD. This creates the characteristic "wow" sweep.
-4. **Amplitude envelope (VCA)** — opens/closes the level per note (gate), with accent on
-   marked steps.
-5. **Accent** — on `+` steps, boosts both the level and the filter opening.
-6. **Slide** — on `~` steps, pitch glide toward the next note (legato).
-7. **Distortion** — optional tanh saturation after the filter.
-8. **Output** — a gentle tanh limiter, scaled by VOLUME.
-
-The **sequencer** handles 16 steps, subdivisions (SCALE), swing (SHUFFLE), play modes
-(PLAY MODE), and repetition.
-
-Both engines (`tb303.py` offline and `tb303_rt.py` real-time) implement the **same** chain
-and produce the same character — one renders a whole buffer, the other streams it.
-
----
-
-## Real-time engine (`tb303_rt.py`)
-
-`tb303_rt.py` is what makes knob changes audible **instantly**. Where `tb303.py` renders a
-whole pattern into a buffer and the GUI loops it (so changing a knob re-renders and
-restarts the loop), `tb303_rt.py` generates audio **continuously, block by block**, inside
-an audio callback, and reads the parameters and pattern on **every block**. Turning CUT OFF
-or RESONANCE is heard immediately, with no loop restart.
-
-To stay real-time, the per-sample DSP loop (oscillator + ladder filter + envelopes +
-sequencer) is compiled with **Numba** (`@njit`). Without Numba it would run in pure Python,
-which is far too slow for streaming audio — so the studio only switches to real-time when
-**Numba is installed**, and otherwise uses the pygame fallback.
-
-**How the studio picks the engine.** At startup it tries the real-time engine first:
-
-- numba **and** sounddevice present → **real-time mode** (live, responsive knobs).
-- otherwise → **pygame fallback** (render + loop), exactly like before.
-
-You don't choose anything; the skin and workflow are identical either way.
-
-**Standalone test.** You can run the engine on its own to confirm real-time works on your
-machine. It plays the demo and sweeps the cutoff live:
+You can test the engines on their own:
 
 ```bash
-python3 tb303_rt.py
+python3 tb303_rt.py            # plays the 303 demo and sweeps the cutoff (live)
+python3 instruments_rt.py      # pre-renders a sax, plays the demo, sweeps the cutoff (live)
 ```
-
-**Library API** (used by the studio, usable on its own):
-
-```python
-from tb303_rt import RealtimeEngine, DEMO_PATTERN
-
-eng = RealtimeEngine(sr=44100, blocksize=256)
-eng.set_pattern(DEMO_PATTERN)      # strings or (note, accent, slide) tuples, up to 64 steps
-eng.set_param("cutoff", 0.3)       # cutoff, resonance, env_mod, decay, accent, bpm,
-eng.set_param("resonance", 0.85)   #   distortion, volume, swing, tuning, subdiv, gate_len
-eng.set_param("waveform", "saw")   # "saw" or "square"
-eng.start()                        # opens the sounddevice stream
-eng.set_playing(True)              # start the sequencer
-eng.preview("C2")                  # audition a single note (even while stopped)
-eng.set_playing(False)
-eng.stop()                         # close the stream
-```
-
-**Blocksize / latency.** Default `blocksize=256` (~6 ms). If you hear crackles/dropouts
-(common over WSL's audio bridge), increase it (e.g. `512` or `1024`) for stability at the
-cost of a little more latency.
-
----
-
-## Pattern notation
-
-A pattern is a list of strings, one per step:
-
-| Spelling | Meaning |
-|---|---|
-| `"C2"` | note (C, octave 2) |
-| `"C#2"` / `"D#2"` … | sharps |
-| `"C2+"` | **accented** note |
-| `"C2~"` | note with **slide** (into the next) |
-| `"."` | rest (silence) |
-
-Keyboard octaves: 1, 2, 3. Example (the demo pattern):
-
-```python
-["C2", "C2~", "C3", "C2+", "D#2", "C2~", "C3", "A#1",
- "C2", "G2~", "C3+", "C2", "D#2", "C2", "A#1~", "C2+"]
-```
-
----
-
-## Using the engine as a library
-
-`tb303.py` can be used on its own (offline render to WAV), with no interface:
-
-```python
-from tb303 import TB303, DEMO_PATTERN
-
-tb = TB303(sample_rate=44100)
-
-audio = tb.render(
-    DEMO_PATTERN,        # list of steps (see notation)
-    bpm=130,
-    waveform="saw",      # "saw" or "square"
-    cutoff=0.32,         # 0..1
-    resonance=0.85,      # 0..1
-    env_mod=0.6,         # 0..1
-    decay=0.5,           # 0..1
-    accent=0.6,          # 0..1
-    distortion=0.2,      # 0..1
-    tuning=440.0,        # Hz (A reference)
-    gate_len=0.55,       # note length (0..1)
-    repeats=4,           # number of loops
-    subdiv=4,            # 2,3,4,6,8 (see SCALE)
-    swing=0.15,          # 0..0.66
-    play_mode="forward", # forward/reverse/fwd_rev/invert/random
-)
-
-tb.write_wav(audio, "out.wav")   # stereo 16-bit 44.1 kHz
-```
-
-Running the engine directly generates a demo file:
-
-```bash
-python3 tb303.py        # -> tb303_demo.wav
-```
-
-> **Note on `write_wav`**: by default it **respects the level** of the supplied signal
-> (no auto-normalization), so the VOLUME knob has an effect. If you want it to
-> normalize, call `tb.write_wav(audio, "x.wav", normalize=True)`.
-
-Exposed helpers: `note_to_freq(name, tuning)`, `parse_step(s)`,
-`apply_play_mode(steps, mode)`, and the `DEMO_PATTERN` constant.
-
----
-
-## The skin system (image + coordinate map)
-
-The interface doesn't draw its controls: it **displays an image** (`tb303_skin.png`)
-and **overlays functional controls** at precise coordinates (knob needles, value text,
-menus, clickable buttons, live notes on the cells).
-
-These coordinates live in the **`SKIN_MAP`** dictionary at the top of
-`tb303_studio.py` (in native image pixels). For each knob: center, radius, value-text
-position; for buttons/cells: center + half-width/half-height; for the keyboard and the
-strip: their bounding rectangle.
-
-The image is shown at native size, or scaled down automatically to fit the screen; the
-coordinates are scaled accordingly, so alignment stays correct at any screen size.
-
----
-
-## Creating a new skin
-
-To skin the synth with a **different image** (a cyberpunk, a classic…), you must give
-the program the control positions. The reliable method:
-
-1. Start from a panel image (same general layout: knobs on top, keyboard, 16-step
-   strip, etc.).
-2. On **a copy**, in an editor (GIMP, Photopea…), mark in **bright red (#FF0000)**:
-   - a **circle** at the center of each knob (10),
-   - a **rectangle** around each control (buttons, menus, banks, value fields), one big
-     rectangle around the **keyboard**, and one around the **16-cell strip**.
-3. Those red marks are detected automatically by image analysis: the exact coordinates
-   are extracted, the **red is erased** (and the cells/values blanked) to produce the
-   clean skin, and the `SKIN_MAP` is filled in.
-
-> Tip: mark on a **copy of the final image** — don't regenerate the image with the
-> marks (it would shift the layout and the coordinates wouldn't match anymore).
-
-This is exactly the procedure used to build `tb303_skin.png` and its current map.
 
 ---
 
 ## Troubleshooting
 
-**RUN / STOP do nothing.** The button does fire, but it has nothing to play if no audio
-engine is active. Click RUN: a dialog explains why. For real-time you need
-`pip install numba sounddevice`; or `pip install pygame` for the fallback. (SAVE WAV works
-without any of them.)
+**No sound / RUN does nothing.** You need an audio backend: `pip install numba sounddevice`
+(real-time) or `pip install pygame` (fallback). SAVE WAV works without audio.
 
-**Crackles / dropouts in real-time (often on WSL).** Increase the blocksize — in
-`tb303_rt.py`, `RealtimeEngine(blocksize=...)` from `256` to `512` or `1024`. More buffer,
-fewer dropouts.
+**A loaded sample is silent.** It's probably a **one-shot effect** (a whoosh/riser) whose
+energy is at the end and whose pitch can't be detected — the melodic sampler retriggers
+from the (quiet) start each step. Use a **sustained single note** instead, or trim the
+silent head.
 
-**It plays but knob changes are laggy / it "doesn't work like before."** That usually means
-sounddevice is installed but **numba is not**, so the DSP runs un-compiled (too slow). Either
-`pip install numba` (real-time) or remove sounddevice so it cleanly uses pygame.
+**Can't load an MP3/M4A.** Install `soundfile` or `ffmpeg`. WAV/FLAC/OGG/AIFF work via
+soundfile; MP3/M4A/etc. go through ffmpeg.
 
-**"I have to activate a conda env (e.g. xtts) for sound."** That only means numba/sounddevice
-were installed in that env. Install them in your base/default env (or a dedicated one) so you
-don't need to activate anything: `pip install numba sounddevice`.
+**Crackle in real-time (often on WSL).** Increase the blocksize (`RealtimeEngine(blocksize=512)`).
 
-**No sound on WSL.** Make sure ALSA is routed to PulseAudio (`~/.asoundrc`, see install) and
-that you launch from WSL. WSLg routing (`PULSE_SERVER`) is set automatically.
+**Window won't open / ImageTk error (Ubuntu).** `sudo apt install python3-pil.imagetk python3-tk`.
 
-**Window won't open / ImageTk error.** On Ubuntu, install `python3-pil.imagetk` (and
-`python3-tk`). `ImageTk` doesn't always ship with Pillow alone.
+**WSL: `couldn't connect to display "<IP>:0"`.** WSLg serves the display on `:0`, not on the
+Windows IP. If an old line in `~/.bashrc` (or a startup script) forces
+`export DISPLAY=<IP>:0`, comment it out — WSLg sets `DISPLAY=:0` automatically. Quick test:
 
-**pip refuses ("externally-managed-environment").** Recent Ubuntu. Use apt
-(`sudo apt install python3-…`), a virtualenv/conda env, or `pip install --break-system-packages`.
+```bash
+export DISPLAY=:0
+python3 tb303_studio-v2.0.py
+```
 
-**Controls land off the image.** If you use an image **different** from `tb303_skin.png`
-without adapting `SKIN_MAP`, the coordinates won't match. Redo the "Creating a new skin"
-procedure.
+If it works after that, find and disable the offending line:
 
-**Sound is saturated / too loud.** Lower VOLUME, and don't stack DIST + RESONANCE at max
-at the same time: each adds energy.
+```bash
+grep -n "export DISPLAY" ~/.bashrc ~/.profile ~/.bash_profile
+```
 
----
+If WSLg itself is missing (`/mnt/wslg/.X11-unix/` empty), update WSL from Windows
+PowerShell: `wsl --update`, then `wsl --shutdown`.
 
-## File-by-file notes
-
-**`tb303.py`** — offline engine, no GUI dependency. `TB303` class (`render`, `write_wav`
-methods), `note_to_freq`, `parse_step`, `apply_play_mode` functions, the `DEMO_PATTERN`
-constant, and a demo `main()`. Used by the studio for WAV export.
-
-**`tb303_rt.py`** — real-time engine. `RealtimeEngine` class (`start`, `stop`, `set_param`,
-`set_pattern`, `set_playing`, `preview`) wrapping a sounddevice stream whose callback runs a
-Numba-compiled `synth_block`. Run directly for a standalone real-time demo.
-
-**`tb303_studio.py`** — skin interface. Holds `SKIN_MAP` (coordinates), the overlay
-rendering, click/wheel handling, audio (real-time engine first, pygame fallback, automatic
-WSLg routing), WAV export, keyboard note audition, and the `.tb303` project save/load
-(File menu, Ctrl+S / Ctrl+O). Imports both engines.
-
-**`tb303_skin.png`** — skin image 1817×866, with the cells and value fields already
-blanked, ready to receive the overlays.
+**Sound only works inside a conda env.** That just means numba/sounddevice are installed
+there. Install them in your base env to avoid having to activate anything.
 
 ---
+
+## Credits
+
+- Synthesis, interfaces and code: **Stéphane "ZFEbHVUE"**.
+- Bundled real saxophone note: **VCSL — Versilian Community Sample Library** (CC0 / public
+  domain).
 
 *Character emulation for personal/educational use. Original panel design; no Roland
 branding, logo, or sample is used.*

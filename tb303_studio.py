@@ -7,12 +7,13 @@ Goes with tb303.py and tb303_skin.png (same folder).
 Requires numpy + Pillow; pygame optional (also tb303_rt for real-time playback).
 Run: python tb303_studio.py
 """
-import sys, os, json, math
+import sys, os, json, math, time
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from tb303 import TB303, DEMO_PATTERN, parse_step, apply_play_mode
 import instruments
+import instruments_rt
 try:
     from tb303_rt import RealtimeEngine, _HAS_NUMBA
     _HAS_RT = _HAS_NUMBA          # real-time only if Numba is present (else too slow)
@@ -92,6 +93,7 @@ class SkinStudio:
         self.scale = min(1.0, (sw - 30) / self.IW, (sh - 90) / self.IH)
         disp = (self.img.resize((int(self.IW * self.scale), int(self.IH * self.scale)),
                                 Image.LANCZOS) if self.scale < 1 else self.img)
+        self._disp_rgb = disp.convert("RGB")
         self.bg = ImageTk.PhotoImage(disp)
         root.title("TB-303 Studio — " + os.path.basename(image_path))
         root.resizable(False, False)
@@ -112,6 +114,17 @@ class SkinStudio:
         self.sel = 0
         self.playing = False
         self._drag = None
+        # steampunk lamps act as VU meters: the glass itself brightens with the music
+        # (dark on silence), the effect confined to the bulb (no halo). Native coords.
+        self._lamps = [(33, 325, 36), (1291, 96, 26), (1691, 212, 24)]
+        self.level = 0.0
+        self._vu_on = False
+        self._lamp_items = []
+        self._lamp_frames = []
+        self._loop_audio = None
+        self._loop_t0 = 0.0
+        self._loop_dur = 1.0
+        self._build_lamp_frames()
         self.audio_ok = self._init_audio()
         self._presample_colors()
         self._make_combos()
@@ -133,6 +146,9 @@ class SkinStudio:
         self.instrument = "TB-303"
         self.voice = None
         self.sampler = None
+        self.irt = None
+        self.irt_ok = instruments_rt._HAS_RT_INSTR
+        self._instr_rt = False
         self._instr_var = tk.StringVar(value="TB-303")
         for name in ("TB-303",) + tuple(instruments.BUILTIN.keys()):
             instr.add_radiobutton(label=name, variable=self._instr_var, value=name,
@@ -234,6 +250,13 @@ class SkinStudio:
 
     def _knob_live(self, k):
         """Knob moved: push audio RIGHT AWAY, redraw is coalesced."""
+        if not self._is303():
+            if self._instr_rt and self.irt is not None:
+                self._irt_set_param(k)          # live, no re-render
+            else:
+                self._schedule_instr()          # coalesced re-render of the instrument loop
+            self._schedule_refresh()
+            return
         if self.mode == "rt" and self.rt is not None:
             try:
                 self._push_param(k)             # audio first -> no latency
@@ -242,6 +265,16 @@ class SkinStudio:
         elif self.playing and self.audio_ok:
             self._play_loop()
         self._schedule_refresh()
+
+    def _schedule_instr(self):
+        if self.playing and not getattr(self, "_instr_pending", False):
+            self._instr_pending = True
+            self.root.after(55, self._do_instr)
+
+    def _do_instr(self):
+        self._instr_pending = False
+        if self.playing and not self._is303():
+            self._play_instr()
 
     def _schedule_refresh(self):
         """Coalesce redraws (~60 fps max): audio stays prioritized and immediate."""
@@ -458,7 +491,10 @@ class SkinStudio:
         if not note:
             return
         if not self._is303():
-            self._preview_instr(note)
+            if self._instr_rt and self.irt is not None:
+                self.irt.preview(note)
+            else:
+                self._preview_instr(note)
             return
         if not self.audio_ok:
             return
@@ -478,7 +514,9 @@ class SkinStudio:
     def _changed(self):
         self.refresh()
         if not self._is303():
-            if self.playing:
+            if self._instr_rt and self.irt is not None:
+                self._irt_push_all()              # live params + pattern, no re-render
+            elif self.playing:
                 self._play_instr()
             return
         if self.mode == "rt" and self.rt is not None:
@@ -492,6 +530,9 @@ class SkinStudio:
     def _play_loop(self):
         try:
             a = self._render(1)
+            self._loop_audio = a[:, 0] if a.ndim == 2 else a
+            self._loop_dur = max(1e-3, len(a) / self.SR)
+            self._loop_t0 = time.time()
             d = np.ascontiguousarray((np.clip(a, -1, 1) * 32767).astype(np.int16))
             pygame.mixer.stop()
             self._snd = pygame.sndarray.make_sound(d)
@@ -519,8 +560,10 @@ class SkinStudio:
             if self.playing:
                 self._push_rt()
                 self.rt.set_playing(True)
+                self._vu_start()
             else:
                 self.rt.set_playing(False)
+                self._vu_stop()
             self.refresh()
             return
         if self.playing:
@@ -528,12 +571,16 @@ class SkinStudio:
         else:
             self.playing = True
             self._play_loop()
+            self._vu_start()
             self.refresh()
 
     def _stop(self):
         self.playing = False
+        self._vu_stop()
         if not self._is303():
-            if _HAS_PYGAME and pygame.mixer.get_init():
+            if self._instr_rt and self.irt is not None:
+                self.irt.set_playing(False)
+            elif _HAS_PYGAME and pygame.mixer.get_init():
                 pygame.mixer.stop()
         elif self.mode == "rt" and self.rt is not None:
             self.rt.set_playing(False)
@@ -547,6 +594,90 @@ class SkinStudio:
                 self.rt.stop()
         except Exception:
             pass
+        try:
+            if self.irt is not None:
+                self.irt.stop()
+        except Exception:
+            pass
+
+    # ---------- VU meters: the steampunk lamps themselves brighten with the music ----------
+    NLAMPFR = 14
+
+    def _build_lamp_frames(self):
+        """Pre-render, for each lamp, a set of brightness frames of just the bulb glass
+        (dark -> glowing), blended through a soft radial mask so only the glass changes
+        and the edges fade seamlessly into the panel (no halo)."""
+        sc = self.scale
+        src = self._disp_rgb
+        sw, sh = src.size
+        self._lamp_items, self._lamp_frames, self._lamp_pos = [], [], []
+        for (cx, cy, r) in self._lamps:
+            X, Y, R = cx * sc, cy * sc, max(6.0, r * sc)
+            box = int(R * 1.7)
+            x0, y0 = max(0, int(X - box)), max(0, int(Y - box))
+            x1, y1 = min(sw, int(X + box)), min(sh, int(Y + box))
+            region = np.asarray(src.crop((x0, y0, x1, y1))).astype(float)
+            rh, rw = region.shape[:2]
+            yy, xx = np.mgrid[0:rh, 0:rw]
+            d = np.sqrt((xx - (X - x0)) ** 2 + (yy - (Y - y0)) ** 2)
+            m = (np.clip(1.0 - (d / (R * 1.25)) ** 2, 0, 1) ** 1.3)[..., None]
+            frames = []
+            for k in range(self.NLAMPFR):
+                f = k / (self.NLAMPFR - 1)
+                if f < 0.5:                                  # dark -> normal
+                    proc = region * (0.30 + (f / 0.5) * 0.70)
+                else:                                        # normal -> blazing (warm screen)
+                    t = (f - 0.5) / 0.5
+                    warm = np.array([255, 190, 90]) * t
+                    proc = (255 - (255 - region) * (255 - warm) / 255) * (1 + 0.25 * t)
+                comp = region * (1 - m) + np.clip(proc, 0, 255) * m
+                frames.append(ImageTk.PhotoImage(
+                    Image.fromarray(np.clip(comp, 0, 255).astype(np.uint8))))
+            self._lamp_frames.append(frames)
+            self._lamp_pos.append((x0, y0))
+            self._lamp_items.append(self.cv.create_image(x0, y0, anchor="nw",
+                                                          image=frames[self._rest_idx()]))
+
+    def _rest_idx(self):
+        return max(1, int(0.12 * (self.NLAMPFR - 1)))        # faint standby when silent
+
+    def _set_lamps(self, idx):
+        idx = max(0, min(self.NLAMPFR - 1, idx))
+        for it, frames in zip(self._lamp_items, self._lamp_frames):
+            self.cv.itemconfig(it, image=frames[idx])
+
+    def _vu_start(self):
+        if not self._vu_on:
+            self._vu_on = True
+            self._vu_tick()
+
+    def _vu_stop(self):
+        self._vu_on = False
+        self.level = 0.0
+        self._set_lamps(self._rest_idx())
+
+    def _vu_level(self):
+        # real-time engines have a meter; pygame path estimates from the looped buffer
+        if self._is303() and self.mode == "rt" and self.rt is not None:
+            return min(1.0, self.rt.get_level())
+        if (not self._is303()) and self._instr_rt and self.irt is not None:
+            return min(1.0, self.irt.get_level())
+        if self._loop_audio is not None and self._loop_dur > 0:
+            pos = (time.time() - self._loop_t0) % self._loop_dur
+            i = int(pos * self.SR)
+            w = self._loop_audio[i:i + 1024]
+            if len(w):
+                return float(min(1.0, np.sqrt(np.mean(w * w)) * 3.2))
+        return 0.0
+
+    def _vu_tick(self):
+        if not self._vu_on or not self.playing:
+            self._vu_stop()
+            return
+        lv = self._vu_level()
+        self.level = lv if lv > self.level else self.level * 0.78    # fast rise, slow fall
+        self._set_lamps(int(round(self.level * (self.NLAMPFR - 1))))
+        self.root.after(40, self._vu_tick)
 
     # ---------- instruments (non-303 voices) ----------
     def _is303(self):
@@ -572,23 +703,91 @@ class SkinStudio:
                 return False
         return True
 
+    # ---------- real-time instrument engine (sample + 303 filter, live knobs) ----------
+    def _ensure_irt(self):
+        if not self.irt_ok:
+            return False
+        try:
+            if self.irt is None:
+                self.irt = instruments_rt.RealtimeSamplerEngine(sr=self.SR)
+            if self.mode == "rt" and self.rt is not None:   # free the device (one stream at a time)
+                try:
+                    self.rt.stop()
+                except Exception:
+                    pass
+            self.irt.start()
+            return True
+        except Exception:
+            self.irt_ok = False
+            return False
+
+    def _resume_303(self):
+        if self.irt is not None:
+            try:
+                self.irt.stop()
+            except Exception:
+                pass
+        if self.mode == "rt" and self.rt is not None:
+            try:
+                self.rt.start()
+            except Exception:
+                pass
+
+    def _irt_load_voice(self):
+        if self.irt is None:
+            return
+        if self.instrument == "Sample" and self.sampler is not None:
+            self.irt.set_sample(self.sampler.s, self.sampler.base)
+        elif self.instrument in instruments.BUILTIN:
+            s, b = instruments_rt.reference_sample(self.instrument, self.SR)
+            self.irt.set_sample(s, b)
+
+    def _irt_push_pattern(self):
+        steps = apply_play_mode([dict(s) for s in self.steps], PLAYMODES[self.playmode_v.get()])
+        self.irt.set_pattern([(s["note"], s["accent"], s["slide"]) for s in steps])
+
+    def _irt_push_all(self):
+        if self.irt is None:
+            return
+        for k in ("cutoff", "resonance", "env_mod", "decay", "accent", "bpm",
+                  "distortion", "volume", "tuning"):
+            self.irt.set_param(k, self.kv[k])
+        self.irt.set_param("swing", self.kv["shuffle"])
+        self.irt.set_param("subdiv", SCALE_MAP[self.scale_v.get()])
+        self._irt_push_pattern()
+
+    def _irt_set_param(self, k):
+        if self.irt is None:
+            return
+        self.irt.set_param("swing" if k == "shuffle" else k, self.kv[k])
+
     def _set_instrument(self, name):
         was = self.playing
         self._stop()
         self.instrument = name
         self._instr_var.set(name if name in (("TB-303",) + tuple(instruments.BUILTIN)) else "TB-303")
+        self._instr_rt = False
+        if name == "TB-303":
+            self._resume_303()
+        elif self.irt_ok and self._ensure_irt():
+            self._instr_rt = True
+            self._irt_load_voice()
+            self._irt_push_all()
         if was:
             self._toggle_run()
         self.refresh()
 
     def _load_sample(self):
-        path = filedialog.askopenfilename(filetypes=[("WAV", "*.wav"), ("All", "*.*")])
+        path = filedialog.askopenfilename(filetypes=[
+            ("Audio", "*.wav *.flac *.ogg *.mp3 *.aiff *.aif *.m4a *.aac *.opus *.wma"),
+            ("All files", "*.*")])
         if not path:
             return
         try:
             self.sampler = instruments.Sampler.from_wav(path)
         except Exception as e:
-            messagebox.showerror("Cannot load sample", str(e))
+            messagebox.showerror("Cannot load sample",
+                                 f"{e}\n\n(For mp3/m4a/... soundfile or ffmpeg must be installed.)")
             return
         self._set_instrument("Sample")
 
@@ -599,7 +798,10 @@ class SkinStudio:
         a = instruments.render_pattern(
             self.steps, v, bpm=int(self.kv["bpm"]), subdiv=SCALE_MAP[self.scale_v.get()],
             swing=self.kv["shuffle"], play_mode=PLAYMODES[self.playmode_v.get()],
-            repeats=repeats, tuning=self.kv["tuning"])
+            repeats=repeats, tuning=self.kv["tuning"],
+            cutoff=self.kv["cutoff"], resonance=self.kv["resonance"],
+            env_mod=self.kv["env_mod"], decay=self.kv["decay"],
+            distortion=self.kv["distortion"])
         return np.clip(a * self.kv["volume"], -1, 1)
 
     def _play_instr(self):
@@ -607,6 +809,9 @@ class SkinStudio:
             return
         try:
             a = self._render_instr(1)
+            self._loop_audio = a[:, 0] if a.ndim == 2 else a
+            self._loop_dur = max(1e-3, len(a) / self.SR)
+            self._loop_t0 = time.time()
             pygame.mixer.stop()
             self._snd = pygame.sndarray.make_sound(
                 np.ascontiguousarray((a * 32767).astype(np.int16)))
@@ -616,6 +821,20 @@ class SkinStudio:
             self.audio_err = f"instr KO ({e})"
 
     def _toggle_instr(self):
+        if self._instr_rt and self.irt is not None:
+            if self.mode == "rt" and self.rt is not None:
+                self.rt.set_playing(False)
+            self.playing = not self.playing
+            if self.playing:
+                self._irt_load_voice()
+                self._irt_push_all()
+                self.irt.set_playing(True)
+                self._vu_start()
+            else:
+                self.irt.set_playing(False)
+                self._vu_stop()
+            self.refresh()
+            return
         if not self._ensure_pygame():
             messagebox.showinfo("Audio", "Instrument playback needs pygame:\n    pip install pygame")
             return
@@ -624,6 +843,7 @@ class SkinStudio:
         self.playing = not self.playing
         if self.playing:
             self._play_instr()
+            self._vu_start()
         elif pygame.mixer.get_init():
             pygame.mixer.stop()
         self.refresh()
@@ -644,10 +864,20 @@ class SkinStudio:
             pass
 
     def _save(self):
-        path = filedialog.asksaveasfilename(defaultextension=".wav",
-                                            filetypes=[("WAV", "*.wav")], initialfile="tb303.wav")
-        if path:
-            self.tb.write_wav(self._render(4) if self._is303() else self._render_instr(4), path)
+        path = filedialog.asksaveasfilename(
+            defaultextension=".wav", initialfile="tb303.wav",
+            filetypes=[("WAV", "*.wav"), ("FLAC", "*.flac"), ("OGG", "*.ogg"),
+                       ("MP3", "*.mp3"), ("AIFF", "*.aiff"), ("All files", "*.*")])
+        if not path:
+            return
+        audio = self._render(4) if self._is303() else self._render_instr(4)
+        try:
+            if path.lower().endswith(".wav"):
+                self.tb.write_wav(audio, path)
+            else:
+                instruments.write_audio(audio, path, sr=self.SR)
+        except Exception as e:
+            messagebox.showerror("Cannot export", str(e))
 
     # ---------- .tb303 project (full, recallable state) ----------
     def _project_state(self):
