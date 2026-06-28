@@ -109,6 +109,7 @@ class SkinStudio:
         self.steps = []
         self._load_pattern(DEMO_PATTERN)
         self.banks = [None] * 8
+        self.bank_settings = [None] * 8          # per-bank knob/waveform/scale/mode snapshot
         self.banks[0] = [dict(s) for s in self.steps]
         self.cur_bank = 0
         self.sel = 0
@@ -451,11 +452,34 @@ class SkinStudio:
             self.kv[k] = p[k]
         self._changed()
 
+    def _capture_settings(self):
+        """Snapshot the sound (knobs + waveform + scale + play mode) of the current bank."""
+        return {"knobs": dict(self.kv), "waveform": self.waveform,
+                "scale": self.scale_v.get(), "playmode": self.playmode_v.get()}
+
+    def _apply_settings(self, s):
+        if not s:
+            return
+        for k, v in s.get("knobs", {}).items():
+            if k in self.kv:
+                lo, hi = KNOB_SPEC[k][0], KNOB_SPEC[k][1]
+                self.kv[k] = min(hi, max(lo, float(v)))
+        self.waveform = s.get("waveform", self.waveform)
+        if "scale" in s:
+            self.scale_v.set(s["scale"])
+        if "playmode" in s:
+            self.playmode_v.set(s["playmode"])
+
     def _switch_bank(self, b):
+        # freeze the current bank: its steps AND its knob settings
         self.banks[self.cur_bank] = [dict(s) for s in self.steps]
+        self.bank_settings[self.cur_bank] = self._capture_settings()
         self.cur_bank = b
         if self.banks[b] is None:
             self.banks[b] = [{"note": None, "accent": False, "slide": False} for _ in range(16)]
+        if self.bank_settings[b] is not None:    # recall this bank's own sound
+            self._apply_settings(self.bank_settings[b])
+        # (a never-used bank keeps the current sound, then gets its own copy when you leave it)
         self.steps = [dict(s) for s in self.banks[b]]
         self.sel = 0
         self._changed()
@@ -882,8 +906,9 @@ class SkinStudio:
     # ---------- .tb303 project (full, recallable state) ----------
     def _project_state(self):
         self.banks[self.cur_bank] = [dict(s) for s in self.steps]   # freeze current bank
+        self.bank_settings[self.cur_bank] = self._capture_settings()
         return {
-            "format": "tb303-studio", "version": 1,
+            "format": "tb303-studio", "version": 2,
             "knobs": {k: round(float(v), 4) for k, v in self.kv.items()},
             "waveform": self.waveform,
             "scale": self.scale_v.get(),
@@ -891,6 +916,10 @@ class SkinStudio:
             "preset": self.preset_v.get(),
             "cur_bank": self.cur_bank,
             "banks": [None if b is None else [dict(s) for s in b] for b in self.banks],
+            "bank_settings": [None if s is None else {
+                "knobs": {k: round(float(v), 4) for k, v in s["knobs"].items()},
+                "waveform": s["waveform"], "scale": s["scale"], "playmode": s["playmode"]
+            } for s in self.bank_settings],
         }
 
     def _apply_project(self, st):
@@ -907,12 +936,23 @@ class SkinStudio:
             self.banks = [None if b is None else
                           [{"note": s.get("note"), "accent": bool(s.get("accent")),
                             "slide": bool(s.get("slide"))} for s in b] for b in banks]
+        bs = st.get("bank_settings")
+        if bs and len(bs) == 8:
+            self.bank_settings = [None if s is None else {
+                "knobs": dict(s.get("knobs", {})), "waveform": s.get("waveform", self.waveform),
+                "scale": s.get("scale", self.scale_v.get()),
+                "playmode": s.get("playmode", self.playmode_v.get())} for s in bs]
+        else:
+            self.bank_settings = [None] * 8
         self.cur_bank = int(st.get("cur_bank", 0)) % 8
         if self.banks[self.cur_bank] is None:
             self.banks[self.cur_bank] = [{"note": None, "accent": False, "slide": False}
                                          for _ in range(16)]
+        if self.bank_settings[self.cur_bank] is not None:
+            self._apply_settings(self.bank_settings[self.cur_bank])
         self.steps = [dict(s) for s in self.banks[self.cur_bank]]
         self.sel = 0
+        self._changed()
         self.refresh()
         if self.playing and self.audio_ok:
             self._play_loop()
