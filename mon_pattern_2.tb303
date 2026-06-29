@@ -1,0 +1,138 @@
+{
+ "format": "tb303-studio",
+ "version": 2,
+ "knobs": {
+  "tuning": 440.0,
+  "cutoff": 0.0,
+  "resonance": 1.0,
+  "env_mod": 0.8,
+  "decay": 0.675,
+  "accent": 0.7,
+  "bpm": 124.0,
+  "distortion": 0.655,
+  "volume": 0.9,
+  "shuffle": 0.1155
+ },
+ "waveform": "saw",
+ "scale": "1/16",
+ "playmode": "Reverse",
+ "preset": "Acid",
+ "cur_bank": 0,
+ "banks": [
+  [
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C3",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "D#2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C6",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "A#1",
+    "accent": true,
+    "slide": true
+   },
+   {
+    "note": "C2",
+    "accent": true,
+    "slide": true
+   },
+   {
+    "note": "G2",
+    "accent": true,
+    "slide": true
+   },
+   {
+    "note": "C3",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "D#4",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "A#1",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C2",
+    "accent": true,
+    "slide": false
+   }
+  ],
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ],
+ "bank_settings": [
+  {
+   "knobs": {
+    "tuning": 440.0,
+    "cutoff": 0.0,
+    "resonance": 1.0,
+    "env_mod": 0.8,
+    "decay": 0.675,
+    "accent": 0.7,
+    "bpm": 124.0,
+    "distortion": 0.655,
+    "volume": 0.9,
+    "shuffle": 0.1155
+   },
+   "waveform": "saw",
+   "scale": "1/16",
+   "playmode": "Reverse"
+  },
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null
+ ]
+}
