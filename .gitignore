@@ -4,4 +4,4 @@ __pycache__/
 tb303-old.py
 *.tb303
 *.log
-Instruments/
+!Instruments/**
