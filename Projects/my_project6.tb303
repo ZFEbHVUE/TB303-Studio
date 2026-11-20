@@ -1,0 +1,464 @@
+{
+ "format": "tb303-studio",
+ "version": 3,
+ "patterns_saved": [
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8
+ ],
+ "knobs": {
+  "tuning": 450.3937,
+  "cutoff": 0.1811,
+  "resonance": 1.0,
+  "env_mod": 0.3543,
+  "decay": 0.4252,
+  "accent": 0.6378,
+  "bpm": 109.0,
+  "distortion": 1.0,
+  "volume": 0.8976,
+  "shuffle": 0.0
+ },
+ "waveform": "square",
+ "scale": "1/8T",
+ "playmode": "Forward",
+ "preset": "Classic Bass",
+ "cur_bank": 0,
+ "banks": [
+  [
+   {
+    "note": "B1",
+    "accent": true,
+    "slide": true
+   },
+   {
+    "note": "D2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "B1",
+    "accent": true,
+    "slide": true
+   },
+   {
+    "note": "D2",
+    "accent": true,
+    "slide": true
+   },
+   {
+    "note": "G2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "B2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "G2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "B2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "A1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "E3",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "B1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "B2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "B1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "G1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "F1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "F1",
+    "accent": true,
+    "slide": false
+   }
+  ],
+  [
+   {
+    "note": "D2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "E1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "E2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "A2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "D2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "B2",
+    "accent": true,
+    "slide": true
+   },
+   {
+    "note": "A2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "A1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "A2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C3",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "A1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "A2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "G2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "D2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "F2",
+    "accent": true,
+    "slide": false
+   }
+  ],
+  [
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "G#1",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "G1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "G1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "A2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "A2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "B1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "D3",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "B1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "F3",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "B1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "F1",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "G1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "A1",
+    "accent": false,
+    "slide": false
+   }
+  ],
+  [
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C3",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "D#2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C7",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "A#1",
+    "accent": true,
+    "slide": true
+   },
+   {
+    "note": "C2",
+    "accent": true,
+    "slide": true
+   },
+   {
+    "note": "G2",
+    "accent": true,
+    "slide": true
+   },
+   {
+    "note": "C3",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "D#4",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C4",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "A#2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C2",
+    "accent": true,
+    "slide": false
+   }
+  ],
+  null,
+  null,
+  null,
+  null
+ ],
+ "bank_settings": [
+  {
+   "knobs": {
+    "tuning": 450.3937,
+    "cutoff": 0.1811,
+    "resonance": 1.0,
+    "env_mod": 0.3543,
+    "decay": 0.4252,
+    "accent": 0.6378,
+    "bpm": 109.0,
+    "distortion": 1.0,
+    "volume": 0.8976,
+    "shuffle": 0.0
+   },
+   "waveform": "square",
+   "scale": "1/8T",
+   "playmode": "Forward"
+  },
+  {
+   "knobs": {
+    "tuning": 440.0,
+    "cutoff": 0.0,
+    "resonance": 0.937,
+    "env_mod": 0.8031,
+    "decay": 0.4409,
+    "accent": 1.0,
+    "bpm": 110.0,
+    "distortion": 1.0,
+    "volume": 0.8268,
+    "shuffle": 0.0
+   },
+   "waveform": "saw",
+   "scale": "1/16",
+   "playmode": "Fwd&Rev"
+  },
+  {
+   "knobs": {
+    "tuning": 478.7402,
+    "cutoff": 0.0,
+    "resonance": 0.9764,
+    "env_mod": 0.6063,
+    "decay": 1.0,
+    "accent": 0.9685,
+    "bpm": 116.0,
+    "distortion": 0.9764,
+    "volume": 1.0,
+    "shuffle": 0.0
+   },
+   "waveform": "square",
+   "scale": "1/16",
+   "playmode": "Forward"
+  },
+  {
+   "knobs": {
+    "tuning": 480.0,
+    "cutoff": 0.175,
+    "resonance": 1.0,
+    "env_mod": 0.5,
+    "decay": 1.0,
+    "accent": 0.7,
+    "bpm": 124.0,
+    "distortion": 0.655,
+    "volume": 0.9,
+    "shuffle": 0.1155
+   },
+   "waveform": "saw",
+   "scale": "1/16",
+   "playmode": "Reverse"
+  },
+  null,
+  null,
+  null,
+  null
+ ],
+ "bank_instruments": [
+  {
+   "kind": "tb303",
+   "name": "TB-303"
+  },
+  {
+   "kind": "sample",
+   "name": "didgeridoo_gong_ancrage.flac",
+   "file": "didgeridoo_gong_ancrage.flac",
+   "source": "/home/stphnpro/TB303-Studio/instruments/didgeridoo_gong_ancrage.flac",
+   "base_freq": 64.0988
+  },
+  {
+   "kind": "tb303",
+   "name": "TB-303"
+  },
+  {
+   "kind": "tb303",
+   "name": "TB-303"
+  },
+  null,
+  null,
+  null,
+  null
+ ]
+}
