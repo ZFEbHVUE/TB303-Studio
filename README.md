@@ -2,12 +2,12 @@
 
 **by Stéphane "ZFEbHVUE"**
 
-![TB303-Studio GUI](docs/gui_main.png)
+![TB-303 Studio: the steampunk panel](docs/gui_main.jpg)
 
-An *acid* bass synthesizer inspired by the Roland TB-303, written in pure Python
-(NumPy). It comes with an image-skinned steampunk interface, a real-time audio engine,
-a sampler that can play **real instruments** (sax, drums, anything you load), and a
-second interface designed for **15 kHz arcade CRTs**.
+An *acid* bass synthesizer inspired by the Roland TB-303, written in Python with NumPy
+(and Numba for real-time audio). It comes with an image-skinned steampunk interface, a
+real-time audio engine, a sampler that plays **real instruments** — one instrument per
+pattern — and full control from an **Akai MPK mini Plus** MIDI keyboard.
 
 > **Technical honesty.** This is **not** a component-accurate clone of the TB-303
 > circuit. It is a **character emulation**: anti-aliased saw/square oscillator, a
@@ -16,55 +16,86 @@ second interface designed for **15 kHz arcade CRTs**.
 
 ---
 
-## What's included
+## Quick start
 
-| File | Role |
-|---|---|
-| `tb303.py` | Offline synthesis engine + sequencer (NumPy only). Used for WAV export. |
-| `tb303_rt.py` | **Real-time** TB-303 engine (sounddevice callback + Numba DSP). Live knobs. |
-| `tb303_studio-v2.0.py` | Main GUI: the steampunk image skin with all controls overlaid. |
-| `tb303_skin.png` | The skin image (steampunk panel). |
-| `instruments.py` | Non-303 voices: a **sampler** + synthetic sax/brass, with a resonant filter. |
-| `instruments_rt.py` | **Real-time** engine for the instruments (sample playback + 303 filter). |
-| `tb303_crt.py` | A separate **640x480 vector interface** for CRT/arcade screens (multi-theme). |
+```bash
+git clone https://github.com/ZFEbHVUE/tb303-studio.git
+cd tb303-studio
+python3 -m pip install numpy pillow numba sounddevice mido python-rtmidi
+python3 Python_Scripts/tb303_studio.py
+```
 
-All files must live in the **same folder**.
+The demo pattern is loaded on launch: press **RUN** and turn the knobs while it plays.
+On Linux, `sounddevice` also needs `sudo apt install libportaudio2`. The full list of
+packages is under [Requirements](#requirements-and-installation), and
+[Desktop icon](#desktop-icon) gives you a launcher.
 
 ---
 
-## What this project can do (feature tour)
+## What's in the folder
+
+```
+tb303-studio/
+├── Python_Scripts/    all the Python code
+├── docs/              images: the skin, the icon, screenshots, photos
+├── Projects/          .tb303 projects (a few examples included)
+└── Instruments/       your sample library (created on first launch)
+```
+
+| File in `Python_Scripts/` | Role |
+|---|---|
+| `tb303_studio.py` | **The studio**: the steampunk skin with all controls overlaid. Start here. |
+| `tb303.py` | Offline synthesis engine + sequencer (NumPy only). Plays and exports when Numba/sounddevice are missing. |
+| `tb303_rt.py` | **Real-time** TB-303 engine (sounddevice callback + Numba DSP). |
+| `instruments.py` | The other voices: a **sampler** + synthetic **Sax**, **Brass** and **Didgeridoo**. |
+| `instruments_rt.py` | **Real-time** engine for the instruments (sample playback + the 303 filter). |
+| `midi_in.py` | **MIDI control surface** for the Akai MPK mini Plus, loaded by the studio. |
+| `midi_sniff.py` | Shows what a MIDI controller really sends, to write or check a mapping. |
+| `studio_file_dialog.py` | The file chooser: sizes, dates, search, favourites, *Listen* on audio files. |
+| `install_launcher.py` | Creates the desktop icon and the applications-menu entry. |
+| `tb303_studio-v1.0.py` | The first version, kept for reference. Start it with the skin as argument: `python3 Python_Scripts/tb303_studio-v1.0.py docs/tb303_skin.png`. |
+
+The skin is `docs/tb303_skin.png` and the icon `docs/tb303_icon.png`. Keep the folders
+together: the studio finds everything from the place of `Python_Scripts/`, whatever the
+top folder is called.
+
+---
+
+## What it can do
 
 **The synth.** Saw/square oscillator -> 303-style 4-pole ladder filter (output tapped at
 the 3rd pole, ~18 dB/oct, 4th-pole resonance feedback with tanh saturation) -> filter and
-amp envelopes -> accent, slide, distortion. A 16-step sequencer with banks, subdivisions,
-swing and play modes.
+amp envelopes -> accent, slide, distortion. A 16-step sequencer with 8 patterns,
+subdivisions, swing and play modes.
 
 **Real-time playback.** With Numba + sounddevice, audio is generated continuously block
-by block; turning a knob is heard **instantly**, with no loop restart. Without them, it
-falls back to a pygame render-and-loop. The TB-303 *and* the instruments each have their
-own real-time engine.
+by block; turning a knob is heard **instantly**, with no loop restart. Without them, the
+studio falls back to a pygame render-and-loop.
 
-**Play other instruments, not just the 303.** An **Instrument** menu lets you switch the
-voice to a synthetic **Sax** or **Brass**, or **load your own sample** (a real sax, a
-piano, anything). The sample is replayed at the right pitch for every note of the
-sequence, and it runs through the **same resonant 303 filter**, so CUT OFF / RESONANCE /
-ENV MOD / DECAY / DIST shape your sax exactly like the 303 (you can make an *acid sax*).
-The instruments play in real time too.
+**One instrument per pattern.** Each of the 8 patterns has its own voice: the TB-303, a
+synthetic **Sax**, **Brass** or **Didgeridoo**, or **any sample you load** (a real sax, a
+piano, anything). Samples are replayed at the pitch of every step and run through the
+**same resonant 303 filter**, so CUT OFF / RESONANCE / ENV MOD / DECAY / DIST shape them
+exactly like the 303 — an *acid sax* is one menu away.
 
-**Load and save in any format.** Loading a sample accepts **WAV, MP3, FLAC, OGG, AIFF,
-M4A, AAC, OPUS, WMA** (via `soundfile`/`ffmpeg`, with a built-in WAV reader as fallback,
-including 24-bit). Exporting audio likewise offers **WAV, FLAC, OGG, MP3, AIFF**.
+**A sample library.** A loaded sample is copied into `Instruments/` and stays in the
+**Instrument** menu from then on, for every pattern and every project.
+
+**Projects that keep everything.** A `.tb303` file stores the knobs, the menus and the 8
+patterns **with their instruments**. Save only the patterns you tick, or import a few
+patterns of another project into the open one, at the places you choose.
+
+**Play it from a MIDI keyboard.** With an **Akai MPK mini Plus**, the knobs, pads,
+wheels, joystick and transport buttons drive the studio, and the keys write the notes —
+accent and slide included. See [MIDI control](#midi-control-akai-mpk-mini-plus).
+
+**Load and save in any format.** Samples load from **WAV, MP3, FLAC, OGG, AIFF, M4A, AAC,
+OPUS, WMA** (via `soundfile`/`ffmpeg`, with a built-in WAV reader as fallback, 24-bit
+included). Audio exports to **WAV, FLAC, OGG, MP3, AIFF**.
 
 **Live VU meters.** The steampunk lamps on the panel are wired as VU meters: the glass of
 each bulb **brightens with the music** (dark on silence, blazing on hits) — the glow is
 confined to the bulb, no halo.
-
-**Editable projects.** Save the whole session (all knobs, waveform, menus, the 8 pattern
-banks) to a `name.tb303` file and reload it later, exactly as it was.
-
-**A CRT interface.** `tb303_crt.py` is an alternate UI drawn entirely with vector shapes
-(no image), sized 640x480 for 15 kHz interlaced arcade monitors, with two themes
-(**arcade neon** and **cyberpunk**), switchable live.
 
 ---
 
@@ -73,20 +104,22 @@ banks) to a `name.tb303` file and reload it later, exactly as it was.
 | Package | Why | Needed for |
 |---|---|---|
 | **NumPy** | Synthesis | always |
-| **Pillow** (+ ImageTk) | Show the skin image | the GUI |
+| **Pillow** (+ ImageTk) | Shows the skin image | the GUI |
 | **Tkinter** | Window and widgets | the GUI (usually preinstalled) |
 | **numba** | Compiles the real-time DSP | real-time mode |
 | **sounddevice** | Real-time audio output | real-time mode |
+| **mido** + **python-rtmidi** | Reads the MIDI keyboard | MIDI control |
 | **pygame** | Fallback playback when real-time is unavailable | optional fallback |
 | **scipy** | Nicer filtering for the synthetic instruments | optional |
-| **soundfile** / **ffmpeg** | Load/save MP3/FLAC/OGG/M4A... | non-WAV formats |
+| **soundfile** / **ffmpeg** | Load/save MP3, FLAC, OGG, M4A...; ffmpeg also lets the file chooser play and describe any format (WAV works without it) | non-WAV formats |
 
-Install into the **same Python that runs the script**:
+Install into the **same Python that runs the studio**:
 
 ```bash
-python3 -m pip install numpy pillow numba sounddevice pygame scipy soundfile
-sudo apt install libportaudio2          # Linux: needed by sounddevice
-sudo apt install ffmpeg                  # optional: lets you load/save any audio format
+python3 -m pip install numpy pillow numba sounddevice mido python-rtmidi pygame scipy soundfile
+sudo apt install libportaudio2       # Linux: needed by sounddevice
+sudo apt install ffmpeg              # optional: any audio format, Listen in the file chooser
+sudo apt install libasound2-dev      # only if pip has to build python-rtmidi
 ```
 
 **Ubuntu (system Python)** — also get ImageTk and Tk:
@@ -95,22 +128,32 @@ sudo apt install ffmpeg                  # optional: lets you load/save any audi
 sudo apt install python3-pil.imagetk python3-tk
 ```
 
-> **Environment note.** numba/sounddevice must be in the env you launch from. If you
-> installed them in a conda env (e.g. `xtts`), either launch from it or install them in
-> your base env. Nothing in this project depends on a specific env.
+> **Environment note.** Nothing depends on a specific env: the packages just have to be
+> in the Python you launch the studio with (for instance your conda `base`). The desktop
+> icon starts that same Python, so it works without activating anything.
 
 ---
 
-## Quick start
+## Desktop icon
 
 ```bash
-python3 tb303_studio-v2.0.py            # main steampunk studio
-python3 tb303_crt.py               # CRT interface (arcade neon)
-python3 tb303_crt.py cyber         # CRT interface (cyberpunk)
+python3 Python_Scripts/install_launcher.py
 ```
 
-The demo pattern is loaded on launch — press **RUN** (or Space on the CRT) and turn the
-knobs while it plays.
+Run it once, **with the Python that runs the studio**. It adds **TB-303 Studio** to the
+applications menu (search "TB-303"; right-click it there to pin it to the dock) and puts
+an icon on the desktop. If the desktop icon shows a cross, right-click it ->
+*Allow Launching*.
+
+| Option | Effect |
+|---|---|
+| `--no-desktop` | Applications menu only. |
+| `--script NAME` | Point the icon at another script of `Python_Scripts/`. |
+| `--remove` | Remove the icon(s). |
+
+Run it again after moving the folder or changing Python env. Started from the icon, the
+studio writes its messages (MIDI port, errors) to `tb303_studio.log`, at the top of the
+folder.
 
 ---
 
@@ -118,10 +161,11 @@ knobs while it plays.
 
 Everything is clickable on the image: the **WAVEFORM** toggle, the **10 knobs**
 (TUNING, CUT OFF, RESONANCE, ENV MOD, DECAY, ACCENT, TEMPO, DIST, VOLUME, SHUFFLE),
-the **SCALE / PLAY MODE / PRESET** menus, **PATTERN 1-8** banks, **RUN/STOP**, the
-3-octave **keyboard** (with working black keys/sharps), the per-step modifiers
+the **SCALE / PLAY MODE / PRESET** menus, **PATTERN 1-8**, **RUN/STOP**, the 3-octave
+**keyboard** (with working black keys/sharps), the per-step modifiers
 **ACCENT / SLIDE / OCT down / OCT up / REST**, the **16-step** strip, and **SAVE WAV /
-CLEAR / DEMO**. Adjust a knob with the mouse wheel or a vertical drag.
+CLEAR / DEMO**. Adjust a knob with the mouse wheel or a vertical drag. The menu bar holds
+**File** (projects, export) and **Instrument**.
 
 ### Programming a pattern
 
@@ -129,74 +173,151 @@ CLEAR / DEMO**. Adjust a knob with the mouse wheel or a vertical drag.
 2. Click a **key** -> the note lands on that step (and sounds), selection advances.
 3. Select a step, then **ACCENT** (`+`, louder/brighter), **SLIDE** (`~`, glide to the
    next note), **OCT down/up**, or **REST** (silence).
-4. **PATTERN 1-8**: eight independent banks. **CLEAR** empties; **DEMO** reloads the example.
+4. **PATTERN 1-8**: eight independent patterns, each with its own instrument. **CLEAR**
+   empties the pattern; **DEMO** reloads the example.
 5. **RUN** loops; turn the knobs *while playing* — they update live.
+
+With the MPK mini Plus, steps 1 to 3 are done from the keyboard: see
+[MIDI control](#midi-control-akai-mpk-mini-plus).
 
 ### Knob reference
 
-| Knob | Range | Default | Effect |
-|---|---|---|---|
-| TUNING | 400-480 | 440 | Fine global tuning. |
-| CUT OFF | 0-1 | 0.40 | Filter cutoff (opens/closes the tone). |
-| RESONANCE | 0-1 | 0.10 | Resonant peak at the cutoff (the acid squelch). |
-| ENV MOD | 0-1 | 0.12 | How much the envelope opens the filter per note. |
-| DECAY | 0-1 | 0.40 | Length of the per-note filter sweep. |
-| ACCENT | 0-1 | 0.30 | Intensity of accented (`+`) steps. |
-| TEMPO | 60-200 | 130 | BPM. |
-| DIST | 0-1 | 0.00 | Saturation after the filter. |
-| VOLUME | 0-1 | 0.90 | Output level (playback and export). |
-| SHUFFLE | 0-0.66 | 0.00 | Swing on alternate steps. |
+| Knob | Range | Default | On the MPK | Effect |
+|---|---|---|---|---|
+| TUNING | 400-480 | 440 | K1 | Fine global tuning. |
+| CUT OFF | 0-1 | 0.40 | K2 | Filter cutoff (opens/closes the tone). |
+| RESONANCE | 0-1 | 0.10 | K3 | Resonant peak at the cutoff (the acid squelch). |
+| ENV MOD | 0-1 | 0.12 | K4 | How much the envelope opens the filter per note. |
+| DECAY | 0-1 | 0.40 | K5 | Length of the per-note filter sweep. |
+| ACCENT | 0-1 | 0.30 | K6 | Intensity of accented (`+`) steps. |
+| TEMPO | 60-200 | 130 | mod wheel | BPM. |
+| DIST | 0-1 | 0.00 | K7 | Saturation after the filter. |
+| VOLUME | 0-1 | 0.90 | K8 | Output level (playback and export). |
+| SHUFFLE | 0-0.66 | 0.00 | joystick | Swing on alternate steps. |
+
+**SCALE** sets the step length (1/8, 1/8T, 1/16, 1/16T, 1/32). **PLAY MODE**: Forward,
+Reverse, Fwd&Rev, Invert, Random. **PRESET** loads a sound: Classic Bass, Acid, Sub Bass,
+Rubber.
 
 **The acid recipe:** high RESONANCE + low CUT OFF + high ENV MOD, then sweep CUT OFF while
 it plays.
 
 ---
 
-## Instruments (sax, samples, drums...)
+## MIDI control (Akai MPK mini Plus)
 
-Use the **Instrument** menu (in the studio's menu bar):
+![Akai MPK mini Plus, top view](docs/mpk_mini_plus.jpg)
+
+Plug the MPK mini Plus in by USB **before** starting the studio: it is found on its own,
+there is nothing to configure. A badge on the panel shows what the keys do,
+**MIDI ● WRITE** or **MIDI ▸ PLAY**, and the mouse keeps working alongside. With no
+keyboard plugged in, or without `mido`/`python-rtmidi`, the studio opens without MIDI;
+`--nomidi` skips it on purpose.
+
+| On the MPK mini Plus | In the studio |
+|---|---|
+| **K1 … K8** | TUNING, CUT OFF, RESONANCE, ENV MOD, DECAY, ACCENT, DIST, VOLUME |
+| **Mod wheel** (stays where you leave it) | TEMPO, in whole BPM |
+| **Pitch wheel** (springs back) | up = **saw**, down = **square** |
+| **Joystick**, sideways | next SHUFFLE value: 0 -> 0.15 -> 0.30 -> 0.45 -> 0.60 -> 0 |
+| **Joystick**, up or down | **REST** on the selected step, then the next step |
+| **PAD 1 … PAD 8** | **PATTERN 1 … 8** (bank A or B, same thing) |
+| **PREV STEP / NEXT STEP** | move along the 16 steps without changing anything |
+| **PLAY** | RUN; press again to stop |
+| **STOP** | STOP |
+| **REC** | switches the keys between **WRITE** and **PLAY** |
+| **OCT- / OCT+** | the MPK's own octave shift: the next notes land lower or higher |
+
+K1 snaps to exactly 440 Hz when it passes near the middle.
+
+**The keys in WRITE mode** (the mode at start): a key writes its note into the selected
+step, which then advances.
+
+- Hit the key **hard** -> **ACCENT** on that step.
+- Play **legato** — keep the previous key down while pressing the next -> **SLIDE**.
+- A chord counts as one note (the 303 is monophonic), so the MPK's CHORDS mode is harmless.
+
+**The keys in PLAY mode** just sound the note: roam freely, nothing is written.
+
+SCALE, PLAY MODE, PRESET, CLEAR, DEMO and the menus stay on screen. The other buttons —
+HOME, SHIFT, TAP TEMPO, PROG SELECT, BANK A/B, SCALES, CHORDS, ARP, NOTE REPEAT, SEQ —
+send no MIDI message of their own, so the studio ignores them. Keep **ARP** off while
+writing, though: the arpeggiator plays notes of its own, and each one would fill a step.
+
+**Another program or another controller.** The mapping was measured on the MPK's default
+program (PGM1). If you changed its programs, or use another keyboard, check what it sends
+and edit the `MAPPING` block at the top of `midi_in.py`:
+
+```bash
+python3 Python_Scripts/midi_sniff.py --list   # list the MIDI ports
+python3 Python_Scripts/midi_sniff.py          # touch every control, then Ctrl-C: a full report
+python3 Python_Scripts/midi_in.py             # no GUI: prints what each control would do
+```
+
+---
+
+## Instruments: one per pattern
+
+The **Instrument** menu sets the voice of the **current pattern**:
 
 - **TB-303** — the synth (default).
-- **Sax / Brass** — built-in synthetic voices (no file needed; recognizable, but synthetic).
-- **Load sample (.wav)...** — load your own audio (any format). It's replayed at the pitch
-  of every step.
+- **Sax / Brass / Didgeridoo** — built-in synthetic voices (no file needed;
+  recognizable, but synthetic).
+- **♫ name** — every sample in `Instruments/`, ready to pick.
+- **Load sample…** — any audio file. It is copied into `Instruments/` and joins the list.
 
-Whatever instrument is selected, the sound runs through the **303 resonant filter +
-distortion**, so all the filter knobs stay active — you can filter and saturate a real
-sax into an acid line. **SAVE WAV** exports with the chosen instrument.
+Go to another pattern and its own instrument comes back, so one project can mix a 303
+line, a sax riff and a didgeridoo drone. You can also drop audio files straight into
+`Instruments/`: they show up the next time the menu opens. Two different files with the
+same name are both kept (`kick.wav`, `kick-2.wav`).
+
+Whatever the instrument, the sound runs through the **303 resonant filter + distortion**,
+so all the filter knobs stay active — you can filter and saturate a real sax into an acid
+line. **WAVEFORM** (saw/sqr) only changes the TB-303: it is the 303's own oscillator.
+**SAVE WAV** exports 4 loops of the current pattern with its instrument, exactly as you
+hear it.
 
 **Tips for samples.** The sampler is *melodic*: it works best with a **single sustained
 note** (a held sax/piano note), auto-detecting its base pitch. Stay within ~1-2 octaves of
 the original to keep the timbre natural. One-shot effects (whooshes, drums, risers) don't
 fit the melodic sampler well — they retrigger from the start on each step, so a short step
-only plays their beginning. (A dedicated one-shot/FX mode can be added if needed.)
+only plays their beginning.
 
 **Free, legal sounds.** The **VCSL** library (Versilian Community Sample Library) is
 **CC0 / public domain** and a great source of single-note instrument samples (sax, piano,
-harp, brass...). The bundled real tenor-sax note comes from VCSL.
+harp, brass...).
 
 ---
 
-## Save and recall a project (`.tb303`)
+## Projects (`.tb303`)
 
 | Action | Menu | Shortcut |
 |---|---|---|
 | Save project | File -> Save project... | **Ctrl+S** |
 | Open project | File -> Open project... | **Ctrl+O** |
-| Export audio | File -> Export WAV... / SAVE WAV | — |
+| Export audio | File -> Export WAV... / **SAVE WAV** | — |
 
-A `.tb303` file (human-readable JSON) stores all 10 knobs, the waveform, the
-Scale/Play Mode/Preset menus, the current bank, and the 8 full pattern banks.
+Saving and opening both show the 8 patterns with their instrument and number of notes,
+and the file chooser opens in `Projects/`:
 
----
+![Saving two patterns (left) and importing two patterns into the open project (right)](docs/project_dialogs.png)
 
-## The CRT interface (`tb303_crt.py`)
+- **Save**: tick the patterns to save; each keeps its number. Nothing ticked = all 8.
+- **Open**: nothing ticked = load the whole project, **replacing** the one that is open.
+  Tick some patterns to **import** them into the open project instead, and choose where
+  each one goes (pattern 3 of the file -> pattern 2 here, for instance). The dialog tells
+  you whether the place is empty or which pattern will be replaced.
 
-A second UI drawn entirely with vector shapes (no image), fixed at **640x480** for
-15 kHz interlaced arcade monitors — bold shapes, high contrast, thick strokes, no thin
-hairlines that flicker when interlaced. Same engines, same controls, same `.tb303`
-projects. Two themes: **crt** (arcade neon) and **cyber** (cyberpunk). Launch with a theme
-(`python3 tb303_crt.py cyber`) or press **T** to switch live. Space = RUN/STOP.
+A `.tb303` file is human-readable JSON: the 10 knobs, the waveform, the Scale/Play
+Mode/Preset menus, the patterns, and for each pattern its **instrument** — for a sample,
+its file name and where it came from. On opening, a sample is looked for in
+`Instruments/`, then in an `Instruments/` folder next to the project (handy when a project
+travels with its samples), then at its original place, and copied into `Instruments/`
+when found elsewhere. If it is nowhere, that pattern plays the TB-303 and a message says
+which file to put back. Projects saved by older versions still open.
+
+`Projects/` comes with a few examples: `acid_line`, `deep_sub`, `mon_pattern_2`,
+`mon_pattern_3`.
 
 ---
 
@@ -208,14 +329,20 @@ so a knob change is heard immediately. The per-sample DSP is compiled with **Num
 (`@njit`). `tb303_rt.py` synthesizes the 303 (oscillator + ladder); `instruments_rt.py`
 reads a **sample** at a pitch-dependent rate (linear interpolation, continuous position)
 and runs it through the **same ladder filter**. Only one audio stream runs at a time:
-switching between the 303 and an instrument hands the device from one engine to the other.
-Without Numba/sounddevice, both fall back to a pygame render-and-loop.
+going from a 303 pattern to an instrument pattern hands the device from one engine to the
+other. Without Numba/sounddevice, both fall back to a pygame render-and-loop.
+
+**SAVE WAV** goes through the engine you hear: it sets up a second copy of the engine
+that plays the current pattern — same knobs, same pattern and play mode, same sample —
+and lets it compute 4 loops. The file is therefore exactly what comes out of the
+speakers, at the knob positions of the moment. (Knob moves made *during* playback are not
+in it: SAVE WAV renders, it does not record.)
 
 You can test the engines on their own:
 
 ```bash
-python3 tb303_rt.py            # plays the 303 demo and sweeps the cutoff (live)
-python3 instruments_rt.py      # pre-renders a sax, plays the demo, sweeps the cutoff (live)
+python3 Python_Scripts/tb303_rt.py          # plays the 303 demo and sweeps the cutoff (live)
+python3 Python_Scripts/instruments_rt.py    # pre-renders a sax, plays the demo, sweeps the cutoff (live)
 ```
 
 ---
@@ -224,6 +351,22 @@ python3 instruments_rt.py      # pre-renders a sax, plays the demo, sweeps the c
 
 **No sound / RUN does nothing.** You need an audio backend: `pip install numba sounddevice`
 (real-time) or `pip install pygame` (fallback). SAVE WAV works without audio.
+
+**The MPK does nothing.** The terminal (or `tb303_studio.log`) says why at launch:
+`MIDI off (No module named 'rtmidi')` -> `pip install python-rtmidi`;
+`MIDI off (no MIDI input port found)` -> plug the MPK in, then restart the studio
+(`aconnect -l` must list it). If it is listed but a control does nothing, run
+`midi_sniff.py` to see what it sends.
+
+**The desktop icon does nothing.** Right-click it -> *Allow Launching*, then look at
+`tb303_studio.log`. If you moved the folder or changed Python env, run
+`install_launcher.py` again.
+
+**A pattern plays the TB-303 instead of its sample.** The sample was not found when the
+project was opened: put the file in `Instruments/` and open the project again.
+
+**SAW/SQR change nothing.** The current pattern uses an instrument: the waveform belongs to
+the TB-303's oscillator.
 
 **A loaded sample is silent.** It's probably a **one-shot effect** (a whoosh/riser) whose
 energy is at the end and whose pitch can't be detected — the melodic sampler retriggers
@@ -243,7 +386,7 @@ Windows IP. If an old line in `~/.bashrc` (or a startup script) forces
 
 ```bash
 export DISPLAY=:0
-python3 tb303_studio-v2.0.py
+python3 Python_Scripts/tb303_studio.py
 ```
 
 If it works after that, find and disable the offending line:
@@ -256,15 +399,18 @@ If WSLg itself is missing (`/mnt/wslg/.X11-unix/` empty), update WSL from Window
 PowerShell: `wsl --update`, then `wsl --shutdown`.
 
 **Sound only works inside a conda env.** That just means numba/sounddevice are installed
-there. Install them in your base env to avoid having to activate anything.
+there. Install them in your base env, or start the studio — and create the icon — from
+that env.
 
 ---
 
 ## Credits
 
 - Synthesis, interfaces and code: **Stéphane "ZFEbHVUE"**.
-- Bundled real saxophone note: **VCSL — Versilian Community Sample Library** (CC0 / public
-  domain).
+- The file chooser is shared with my **XTTS Voice Studio** project.
+- MPK mini Plus photo: my own unit.
 
-*Character emulation for personal/educational use. Original panel design; no Roland
-branding, logo, or sample is used.*
+Released under the MIT License (see `LICENSE`). *Character emulation for
+personal/educational use. Original panel design; no Roland branding, logo, or sample is
+used.* Roland and TB-303 are trademarks of Roland Corporation; Akai Professional and MPK
+mini are trademarks of inMusic Brands. This project is not affiliated with either.

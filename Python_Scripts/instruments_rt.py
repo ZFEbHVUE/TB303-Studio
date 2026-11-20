@@ -5,7 +5,7 @@ Same idea as tb303_rt.py (continuous sounddevice callback, Numba-compiled DSP, p
 read every block so knobs are instant), but instead of an oscillator it plays a *sample*
 read at a pitch-dependent rate (linear interpolation, continuous position), then runs it
 through the very same 303-style resonant ladder filter + envelopes + distortion. The
-built-in synthetic voices (sax, brass) are pre-rendered once into a sample, so the engine
+built-in synthetic voices (sax, brass, didgeridoo) are pre-rendered once into a sample, so the engine
 only ever has to do one thing: read a buffer and filter it.
 
 Dependencies:  pip install numba sounddevice   (+ libportaudio2 on Linux)
@@ -280,16 +280,24 @@ class RealtimeSamplerEngine:
             self.stream.stop(); self.stream.close(); self.stream = None
 
 
+_REF_CACHE = {}
+
+
 def reference_sample(name, sr=44100):
     """Return (samples, base_freq) for a built-in synthetic voice, pre-rendered once
-    at a comfortable base note so the real-time engine can just transpose it."""
+    so the real-time engine can just transpose it. The base note and the length
+    come from instruments.REFERENCE (default: 220 Hz, 1.8 s). The result is cached:
+    the studio asks for it again on every RUN, and a long voice takes a moment."""
     import instruments
-    base = 220.0
-    if name in instruments.BUILTIN:
-        s = instruments.BUILTIN[name](base, 1.8, False, sr)
-    else:
-        s = np.zeros(2)
-    return np.ascontiguousarray(s.astype(np.float64)), base
+    key = (name, sr)
+    if key not in _REF_CACHE:
+        base, secs = getattr(instruments, "REFERENCE", {}).get(name, (220.0, 1.8))
+        if name in instruments.BUILTIN:
+            s = instruments.BUILTIN[name](base, secs, False, sr)
+        else:
+            s = np.zeros(2)
+        _REF_CACHE[key] = (np.ascontiguousarray(s.astype(np.float64)), float(base))
+    return _REF_CACHE[key]
 
 
 if __name__ == "__main__":

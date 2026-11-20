@@ -3,3 +3,5 @@ __pycache__/
 *.wav
 tb303-old.py
 *.tb303
+*.log
+Instruments/

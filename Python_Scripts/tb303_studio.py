@@ -3,11 +3,12 @@
 tb303_studio.py - skinned GUI: the panel is an image (tb303_skin.png), with
 functional controls overlaid at coordinates taken from the red markers.
 
-Goes with tb303.py and tb303_skin.png (same folder).
-Requires numpy + Pillow; pygame optional (also tb303_rt for real-time playback).
-Run: python tb303_studio.py
+Lives in Python_Scripts/ with tb303.py and the other modules; the skin is
+docs/tb303_skin.png. Requires numpy + Pillow; pygame optional (also tb303_rt for
+real-time playback). Run: python Python_Scripts/tb303_studio.py, or the desktop
+icon made by Python_Scripts/install_launcher.py.
 """
-import sys, os, json, math, time
+import sys, os, json, math, time, shutil, filecmp
 import numpy as np
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -29,6 +30,17 @@ try:
     _HAS_PYGAME = True
 except Exception:
     _HAS_PYGAME = False
+# File chooser: the Tk/ttk chooser shared with XTTS Studio (sizes, dates,
+# sorting, search, favourites, and Listen on audio files). It replaces Tk's
+# basic dialogs everywhere in this program; without the module they stay.
+try:
+    import studio_file_dialog as _file_dialog
+    filedialog.askopenfilename = _file_dialog.askopenfilename
+    filedialog.askopenfilenames = _file_dialog.askopenfilenames
+    filedialog.asksaveasfilename = _file_dialog.asksaveasfilename
+    filedialog.askdirectory = _file_dialog.askdirectory
+except Exception:
+    _file_dialog = None
 
 SCALE_MAP = {"1/8": 2, "1/8T": 3, "1/16": 4, "1/16T": 6, "1/32": 8}
 PLAYMODES = {"Forward": "forward", "Reverse": "reverse", "Fwd&Rev": "fwd_rev",
@@ -77,6 +89,62 @@ SKIN_MAP = {
     "val_fg": "#f0d9a0", "sel": "#ffcf6b",
 }
 
+# Projects and the samples they use live in two folders next to this script.
+# A loaded sample is COPIED into Instruments/, and a project refers to it by
+# file name, so the whole TB303-Studio folder can be moved or shared as is.
+#
+# Layout:  TB303-Studio/
+#            Python_Scripts/   this script and the other modules
+#            Projects/         .tb303 projects
+#            Instruments/      samples used by the projects
+#            docs/             images: the skin, the icon, screenshots
+# The script also still runs from the old flat layout (everything in one folder).
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE) if os.path.basename(HERE) == "Python_Scripts" else HERE
+PROJECTS_DIR = os.path.join(ROOT, "Projects")
+INSTRUMENTS_DIR = os.path.join(ROOT, "Instruments")
+DOCS_DIR = os.path.join(ROOT, "docs")
+ICON_PATH = os.path.join(DOCS_DIR, "tb303_icon.png")
+# Tk turns the class name into WM_CLASS ("tb303-studio", "Tb303-studio"); GNOME
+# matches the first part to the launcher (StartupWMClass, tb303-studio.desktop).
+# Keep it lowercase: Tk would otherwise rewrite it ("TB303Studio" -> "tB303Studio").
+WM_CLASS = "tb303-studio"
+
+
+def _find_skin():
+    for p in (os.path.join(DOCS_DIR, "tb303_skin.png"), os.path.join(HERE, "tb303_skin.png"),
+              os.path.join(ROOT, "tb303_skin.png")):
+        if os.path.exists(p):
+            return p
+    return os.path.join(DOCS_DIR, "tb303_skin.png")
+
+
+def _migrate_lowercase_folders():
+    """projects/ and instruments/ became Projects/ and Instruments/: move the
+    old folders' content over, once, never overwriting anything."""
+    for old_name, new in (("projects", PROJECTS_DIR), ("instruments", INSTRUMENTS_DIR)):
+        old = os.path.join(ROOT, old_name)
+        if not os.path.isdir(old) or os.path.normcase(old) == os.path.normcase(new):
+            continue
+        try:
+            if os.path.exists(new) and os.path.samefile(old, new):
+                continue                     # case-insensitive disk: same folder
+            if not os.path.exists(new):
+                os.rename(old, new)
+                continue
+            for name in os.listdir(old):
+                src, dst = os.path.join(old, name), os.path.join(new, name)
+                if not os.path.exists(dst):
+                    shutil.move(src, dst)
+            if not os.listdir(old):
+                os.rmdir(old)
+        except OSError as e:
+            print(f"Could not move {old} to {new}: {e}")
+TB303_ID = "TB-303"
+SAMPLE_PREFIX = "Sample: "              # instrument id of a sample = prefix + file name
+N_BANKS = 8
+PROJECT_VERSION = 3
+
 
 class SkinStudio:
     SR = 44100
@@ -108,8 +176,9 @@ class SkinStudio:
         self.preset_v = tk.StringVar(value="Classic Bass")
         self.steps = []
         self._load_pattern(DEMO_PATTERN)
-        self.banks = [None] * 8
-        self.bank_settings = [None] * 8          # per-bank knob/waveform/scale/mode snapshot
+        self.banks = [None] * N_BANKS
+        self.bank_settings = [None] * N_BANKS    # per-bank knob/waveform/scale/mode snapshot
+        self.bank_instr = [TB303_ID] * N_BANKS   # per-bank instrument id
         self.banks[0] = [dict(s) for s in self.steps]
         self.cur_bank = 0
         self.sel = 0
@@ -143,20 +212,31 @@ class SkinStudio:
         filem.add_separator()
         filem.add_command(label="Export WAV\u2026", command=self._save)
         menubar.add_cascade(label="File", menu=filem)
-        instr = tk.Menu(menubar, tearoff=0)
-        self.instrument = "TB-303"
+        # Rebuilt each time it opens, so a file dropped into Instruments/ shows up.
+        self.instr_menu = tk.Menu(menubar, tearoff=0,
+                                  postcommand=lambda: self._rebuild_instr_menu())
+        self.instrument = TB303_ID
         self.voice = None
-        self.sampler = None
+        self.samples = {}                        # id -> {"name", "path", "sampler"}
         self.irt = None
         self.irt_ok = instruments_rt._HAS_RT_INSTR
         self._instr_rt = False
-        self._instr_var = tk.StringVar(value="TB-303")
-        for name in ("TB-303",) + tuple(instruments.BUILTIN.keys()):
-            instr.add_radiobutton(label=name, variable=self._instr_var, value=name,
-                                  command=lambda n=name: self._set_instrument(n))
-        instr.add_separator()
-        instr.add_command(label="Load sample (.wav)\u2026", command=self._load_sample)
-        menubar.add_cascade(label="Instrument", menu=instr)
+        self._instr_var = tk.StringVar(value=TB303_ID)
+        self._rebuild_instr_menu()
+        menubar.add_cascade(label="Instrument", menu=self.instr_menu)
+        _migrate_lowercase_folders()
+        for d in (PROJECTS_DIR, INSTRUMENTS_DIR):
+            try:
+                os.makedirs(d, exist_ok=True)
+            except OSError:
+                pass
+        if _file_dialog is not None:
+            _file_dialog.configure(
+                parent=lambda: self.root,
+                shortcuts=lambda: [("Projets TB-303", PROJECTS_DIR),
+                                   ("Instruments", INSTRUMENTS_DIR),
+                                   ("TB303-Studio", ROOT)],
+                app_name="tb303_studio")          # its own favourites and last folders
         root.config(menu=menubar)
         root.bind("<Control-s>", lambda e: self._save_project())
         root.bind("<Control-o>", lambda e: self._load_project())
@@ -214,9 +294,11 @@ class SkinStudio:
             self.audio_err = f"audio KO ({e})"
             return False
 
-    def _push_rt(self):
-        """Push the whole current state to the real-time engine (instant, no dropout)."""
-        e = self.rt
+    def _push_rt(self, e=None):
+        """Push the whole current state to the real-time engine (instant, no dropout).
+        `e` is another RealtimeEngine to set up the same way (the WAV export)."""
+        if e is None:
+            e = self.rt
         if e is None:
             return
         for k in ("cutoff", "resonance", "env_mod", "decay", "accent", "bpm",
@@ -471,17 +553,29 @@ class SkinStudio:
             self.playmode_v.set(s["playmode"])
 
     def _switch_bank(self, b):
-        # freeze the current bank: its steps AND its knob settings
+        self._freeze_bank()
+        self._enter_bank(b)
+
+    def _freeze_bank(self):
+        """Store the current bank: its steps, its knob settings and its instrument."""
         self.banks[self.cur_bank] = [dict(s) for s in self.steps]
         self.bank_settings[self.cur_bank] = self._capture_settings()
+        self.bank_instr[self.cur_bank] = self.instrument
+
+    def _enter_bank(self, b):
+        """Make bank b the current one, WITHOUT storing the bank being left first
+        (the caller has either frozen it or deliberately replaced it)."""
         self.cur_bank = b
         if self.banks[b] is None:
             self.banks[b] = [{"note": None, "accent": False, "slide": False} for _ in range(16)]
+            self.bank_instr[b] = self.instrument  # a never-used bank inherits the instrument
         if self.bank_settings[b] is not None:    # recall this bank's own sound
             self._apply_settings(self.bank_settings[b])
         # (a never-used bank keeps the current sound, then gets its own copy when you leave it)
         self.steps = [dict(s) for s in self.banks[b]]
         self.sel = 0
+        if self.bank_instr[b] != self.instrument:
+            self._set_instrument(self.bank_instr[b])
         self._changed()
 
     def _set_note(self, note):
@@ -710,9 +804,93 @@ class SkinStudio:
     def _voice(self):
         if self.instrument in instruments.BUILTIN:
             return instruments.BUILTIN[self.instrument]
-        if self.instrument == "Sample" and self.sampler is not None:
-            return self.sampler.note
+        if self.instrument in self.samples:
+            return self.samples[self.instrument]["sampler"].note
         return None
+
+    # ---------- instrument menu, sample library ----------
+    def _instr_label(self, iid):
+        return iid if not iid.startswith(SAMPLE_PREFIX) else "♫ " + iid[len(SAMPLE_PREFIX):]
+
+    AUDIO_EXT = (".wav", ".flac", ".ogg", ".mp3", ".aiff", ".aif", ".m4a", ".aac",
+                 ".opus", ".wma")
+
+    @classmethod
+    def _library_files(cls):
+        """Audio files sitting in Instruments/, i.e. every sample ever used."""
+        try:
+            names = os.listdir(INSTRUMENTS_DIR)
+        except OSError:
+            return []
+        return sorted((n for n in names
+                       if n.lower().endswith(cls.AUDIO_EXT) and not n.startswith(".")
+                       and os.path.isfile(os.path.join(INSTRUMENTS_DIR, n))), key=str.lower)
+
+    def _rebuild_instr_menu(self):
+        """TB-303 and the built-in voices, then every sample of Instruments/ --
+        each selectable, with a tick on the instrument of the current pattern.
+        A sample is only decoded the first time it is chosen."""
+        m = self.instr_menu
+        m.delete(0, "end")
+        for iid in [TB303_ID] + list(instruments.BUILTIN.keys()):
+            m.add_radiobutton(label=iid, variable=self._instr_var, value=iid,
+                              command=lambda n=iid: self._set_instrument(n))
+        names = set(self._library_files()) | {e["name"] for e in self.samples.values()}
+        if names:
+            m.add_separator()
+            for name in sorted(names, key=str.lower):
+                iid = SAMPLE_PREFIX + name
+                m.add_radiobutton(label=self._instr_label(iid), variable=self._instr_var,
+                                  value=iid, command=lambda n=name: self._choose_library(n))
+        m.add_separator()
+        m.add_command(label="Load sample…", command=self._load_sample)
+        self._instr_var.set(self.instrument)
+
+    def _choose_library(self, name):
+        """A sample of Instruments/ picked from the menu: decode it if needed."""
+        iid = SAMPLE_PREFIX + name
+        if iid not in self.samples:
+            try:
+                self._register_sample(os.path.join(INSTRUMENTS_DIR, name))
+            except Exception as e:
+                self._instr_var.set(self.instrument)     # keep the tick where it was
+                messagebox.showerror("Cannot load sample", f"{name}\n\n{e}")
+                return
+        self._set_instrument(iid)
+
+    @staticmethod
+    def _copy_into_instruments(src):
+        """Copy a sample into Instruments/ and return the copy's path. A file of the
+        same name and content is reused; same name, other content -> name-2.wav."""
+        os.makedirs(INSTRUMENTS_DIR, exist_ok=True)
+        src = os.path.abspath(src)
+        if os.path.dirname(src) == os.path.abspath(INSTRUMENTS_DIR):
+            return src
+        base, ext = os.path.splitext(os.path.basename(src))
+        k = 1
+        while True:
+            name = f"{base}{ext}" if k == 1 else f"{base}-{k}{ext}"
+            dst = os.path.join(INSTRUMENTS_DIR, name)
+            if not os.path.exists(dst):
+                shutil.copy2(src, dst)
+                return dst
+            if filecmp.cmp(src, dst, shallow=False):
+                return dst
+            k += 1
+
+    def _register_sample(self, path, base_freq=None, sampler=None, origin=None):
+        """Load a sample that already sits in Instruments/ and add it to the menu.
+        `origin` is where the file was first picked from, kept as a fallback for
+        when the copy goes missing. Returns its instrument id. Raises if the file
+        cannot be decoded."""
+        name = os.path.basename(path)
+        iid = SAMPLE_PREFIX + name
+        if iid not in self.samples:
+            smp = sampler or instruments.Sampler.from_wav(path, base_freq)
+            self.samples[iid] = {"name": name, "path": path, "sampler": smp,
+                                 "origin": os.path.abspath(origin or path)}
+            self._rebuild_instr_menu()
+        return iid
 
     def _ensure_pygame(self):
         if not _HAS_PYGAME:
@@ -757,28 +935,33 @@ class SkinStudio:
             except Exception:
                 pass
 
-    def _irt_load_voice(self):
-        if self.irt is None:
+    # `e` (optional) is another RealtimeSamplerEngine to set up the same way (the WAV export).
+    def _irt_load_voice(self, e=None):
+        e = self.irt if e is None else e
+        if e is None:
             return
-        if self.instrument == "Sample" and self.sampler is not None:
-            self.irt.set_sample(self.sampler.s, self.sampler.base)
+        if self.instrument in self.samples:
+            smp = self.samples[self.instrument]["sampler"]
+            e.set_sample(smp.s, smp.base)
         elif self.instrument in instruments.BUILTIN:
             s, b = instruments_rt.reference_sample(self.instrument, self.SR)
-            self.irt.set_sample(s, b)
+            e.set_sample(s, b)
 
-    def _irt_push_pattern(self):
+    def _irt_push_pattern(self, e=None):
+        e = self.irt if e is None else e
         steps = apply_play_mode([dict(s) for s in self.steps], PLAYMODES[self.playmode_v.get()])
-        self.irt.set_pattern([(s["note"], s["accent"], s["slide"]) for s in steps])
+        e.set_pattern([(s["note"], s["accent"], s["slide"]) for s in steps])
 
-    def _irt_push_all(self):
-        if self.irt is None:
+    def _irt_push_all(self, e=None):
+        e = self.irt if e is None else e
+        if e is None:
             return
         for k in ("cutoff", "resonance", "env_mod", "decay", "accent", "bpm",
                   "distortion", "volume", "tuning"):
-            self.irt.set_param(k, self.kv[k])
-        self.irt.set_param("swing", self.kv["shuffle"])
-        self.irt.set_param("subdiv", SCALE_MAP[self.scale_v.get()])
-        self._irt_push_pattern()
+            e.set_param(k, self.kv[k])
+        e.set_param("swing", self.kv["shuffle"])
+        e.set_param("subdiv", SCALE_MAP[self.scale_v.get()])
+        self._irt_push_pattern(e)
 
     def _irt_set_param(self, k):
         if self.irt is None:
@@ -786,12 +969,17 @@ class SkinStudio:
         self.irt.set_param("swing" if k == "shuffle" else k, self.kv[k])
 
     def _set_instrument(self, name):
+        """Give the CURRENT pattern this instrument (TB-303, a built-in voice or a
+        loaded sample). Each of the 8 patterns keeps its own."""
+        if name != TB303_ID and name not in instruments.BUILTIN and name not in self.samples:
+            name = TB303_ID                       # unknown id (e.g. sample removed)
         was = self.playing
         self._stop()
         self.instrument = name
-        self._instr_var.set(name if name in (("TB-303",) + tuple(instruments.BUILTIN)) else "TB-303")
+        self.bank_instr[self.cur_bank] = name
+        self._instr_var.set(name)
         self._instr_rt = False
-        if name == "TB-303":
+        if name == TB303_ID:
             self._resume_303()
         elif self.irt_ok and self._ensure_irt():
             self._instr_rt = True
@@ -802,18 +990,24 @@ class SkinStudio:
         self.refresh()
 
     def _load_sample(self):
-        path = filedialog.askopenfilename(filetypes=[
-            ("Audio", "*.wav *.flac *.ogg *.mp3 *.aiff *.aif *.m4a *.aac *.opus *.wma"),
-            ("All files", "*.*")])
+        """Bring a new sound into the studio for the current pattern. No
+        initialdir: the chooser reopens where the last sample came from. Samples
+        already in Instruments/ are picked straight from the Instrument menu."""
+        path = filedialog.askopenfilename(
+            title="Charger un sample pour ce pattern",
+            filetypes=[("Audio", "*.wav *.flac *.ogg *.mp3 *.aiff *.aif *.m4a *.aac *.opus *.wma"),
+                       ("Tous les fichiers", "*.*")])
         if not path:
             return
         try:
-            self.sampler = instruments.Sampler.from_wav(path)
+            smp = instruments.Sampler.from_wav(path)   # decode first: never copy junk
+            iid = self._register_sample(self._copy_into_instruments(path), sampler=smp,
+                                        origin=path)
         except Exception as e:
             messagebox.showerror("Cannot load sample",
                                  f"{e}\n\n(For mp3/m4a/... soundfile or ffmpeg must be installed.)")
             return
-        self._set_instrument("Sample")
+        self._set_instrument(iid)
 
     def _render_instr(self, repeats):
         v = self._voice()
@@ -887,14 +1081,60 @@ class SkinStudio:
         except Exception:
             pass
 
+    def _bounce(self, repeats=4):
+        """`repeats` loops of the current pattern, computed by the real-time engine
+        that plays it, on a second engine set up exactly like the live one -- so
+        the file is what comes out of the speakers. None when no real-time engine
+        plays this pattern: playback is then the offline render (pygame), and so
+        must the file be."""
+        sr = float(self.SR)
+        if self._is303():
+            if self.mode != "rt" or self.rt is None:
+                return None
+            import tb303_rt
+            e = RealtimeEngine(sr=self.SR)
+            self._push_rt(e)
+            def block(buf):
+                tb303_rt.synth_block(buf, len(buf), e.state, e.params,
+                                     e.pat_f, e.pat_a, e.pat_s, e.nsteps, sr)
+        else:
+            if not (self._instr_rt and self.irt is not None):
+                return None
+            e = instruments_rt.RealtimeSamplerEngine(sr=self.SR)
+            self._irt_load_voice(e)
+            self._irt_push_all(e)
+            def block(buf):
+                instruments_rt.synth_block(buf, len(buf), e.state, e.params,
+                                           e.pat_f, e.pat_a, e.pat_s, e.nsteps, sr,
+                                           e.sample, e.sample.size, e.base)
+        # one loop = the engine's own step lengths (play mode and swing included)
+        step = sr * 60.0 / max(self.kv["bpm"], 1.0) / max(SCALE_MAP[self.scale_v.get()], 1)
+        sw = self.kv["shuffle"]
+        loop = sum(step * ((1.0 + sw) if i % 2 == 0 else (1.0 - sw)) for i in range(e.nsteps))
+        n = int(round(loop * repeats))
+        e.set_playing(True)
+        out = np.empty(n)
+        for a in range(0, n, 4096):
+            buf = np.empty(min(4096, n - a))
+            block(buf)
+            out[a:a + len(buf)] = buf
+        out = np.clip(out, -1.0, 1.0)
+        return np.column_stack([out, out])
+
     def _save(self):
         path = filedialog.asksaveasfilename(
             defaultextension=".wav", initialfile="tb303.wav",
             filetypes=[("WAV", "*.wav"), ("FLAC", "*.flac"), ("OGG", "*.ogg"),
-                       ("MP3", "*.mp3"), ("AIFF", "*.aiff"), ("All files", "*.*")])
+                       ("MP3", "*.mp3"), ("AIFF", "*.aiff"), ("Tous les fichiers", "*.*")])
         if not path:
             return
-        audio = self._render(4) if self._is303() else self._render_instr(4)
+        try:
+            audio = self._bounce(4)
+        except Exception as e:
+            print(f"export through the real-time engine failed ({e}): offline render used")
+            audio = None
+        if audio is None:
+            audio = self._render(4) if self._is303() else self._render_instr(4)
         try:
             if path.lower().endswith(".wav"):
                 self.tb.write_wav(audio, path)
@@ -903,83 +1143,252 @@ class SkinStudio:
         except Exception as e:
             messagebox.showerror("Cannot export", str(e))
 
-    # ---------- .tb303 project (full, recallable state) ----------
-    def _project_state(self):
-        self.banks[self.cur_bank] = [dict(s) for s in self.steps]   # freeze current bank
-        self.bank_settings[self.cur_bank] = self._capture_settings()
-        return {
-            "format": "tb303-studio", "version": 2,
-            "knobs": {k: round(float(v), 4) for k, v in self.kv.items()},
-            "waveform": self.waveform,
-            "scale": self.scale_v.get(),
-            "playmode": self.playmode_v.get(),
-            "preset": self.preset_v.get(),
-            "cur_bank": self.cur_bank,
-            "banks": [None if b is None else [dict(s) for s in b] for b in self.banks],
-            "bank_settings": [None if s is None else {
+    # ---------- .tb303 project: per-pattern save / load ----------
+    #
+    # File format v3 = v2 + "bank_instruments" (+ "patterns_saved"). The 8-slot
+    # lists stay 8 long; a pattern that was not saved is null in all of them, so
+    # an older studio can still open the file (it just ignores the instruments).
+
+    def _instr_descriptor(self, iid):
+        if iid in self.samples:
+            e = self.samples[iid]
+            return {"kind": "sample", "name": e["name"],
+                    "file": e["name"],              # its name in Instruments/
+                    "source": e.get("origin") or os.path.abspath(e["path"]),
+                    "base_freq": round(float(e["sampler"].base), 4)}
+        if iid in instruments.BUILTIN:
+            return {"kind": "builtin", "name": iid}
+        return {"kind": "tb303", "name": TB303_ID}
+
+    @staticmethod
+    def _descriptor_label(desc):
+        if not desc or desc.get("kind") in (None, "tb303"):
+            return TB303_ID
+        if desc.get("kind") == "sample":
+            return "♫ " + (desc.get("file") or desc.get("name") or "?")
+        return desc.get("name") or "?"
+
+    @staticmethod
+    def _pattern_notes(steps):
+        return sum(1 for s in (steps or []) if s and s.get("note"))
+
+    @classmethod
+    def _summary(cls, steps, instr_label):
+        n = cls._pattern_notes(steps)
+        if steps is None or n == 0:
+            return f"{instr_label}  ·  empty"
+        return f"{instr_label}  ·  {n} note{'s' if n > 1 else ''}"
+
+    def _project_state(self, include=None):
+        """include: iterable of 0-based patterns to save; None or empty = all 8."""
+        self._freeze_bank()
+        inc = set(range(N_BANKS)) if not include else set(include)
+        cur = self.cur_bank if self.cur_bank in inc else min(inc)
+        top = self.bank_settings[cur] or self._capture_settings()
+        banks, settings, instr = [], [], []
+        for i in range(N_BANKS):
+            b = self.banks[i] if i in inc else None
+            s = self.bank_settings[i] if (i in inc and b is not None) else None
+            banks.append(None if b is None else [dict(x) for x in b])
+            settings.append(None if s is None else {
                 "knobs": {k: round(float(v), 4) for k, v in s["knobs"].items()},
-                "waveform": s["waveform"], "scale": s["scale"], "playmode": s["playmode"]
-            } for s in self.bank_settings],
+                "waveform": s["waveform"], "scale": s["scale"], "playmode": s["playmode"]})
+            instr.append(None if b is None else self._instr_descriptor(self.bank_instr[i]))
+        return {
+            "format": "tb303-studio", "version": PROJECT_VERSION,
+            "patterns_saved": sorted(i + 1 for i in inc),
+            "knobs": {k: round(float(v), 4) for k, v in top["knobs"].items()},
+            "waveform": top["waveform"], "scale": top["scale"], "playmode": top["playmode"],
+            "preset": self.preset_v.get(),
+            "cur_bank": cur,
+            "banks": banks, "bank_settings": settings, "bank_instruments": instr,
         }
 
-    def _apply_project(self, st):
-        for k in self.kv:
-            if k in st.get("knobs", {}):
-                vmin, vmax = KNOB_SPEC[k][0], KNOB_SPEC[k][1]
-                self.kv[k] = min(vmax, max(vmin, float(st["knobs"][k])))
-        self.waveform = st.get("waveform", self.waveform)
-        self.scale_v.set(st.get("scale", self.scale_v.get()))
-        self.playmode_v.set(st.get("playmode", self.playmode_v.get()))
-        self.preset_v.set(st.get("preset", self.preset_v.get()))
-        banks = st.get("banks")
-        if banks and len(banks) == 8:
-            self.banks = [None if b is None else
-                          [{"note": s.get("note"), "accent": bool(s.get("accent")),
-                            "slide": bool(s.get("slide"))} for s in b] for b in banks]
-        bs = st.get("bank_settings")
-        if bs and len(bs) == 8:
-            self.bank_settings = [None if s is None else {
-                "knobs": dict(s.get("knobs", {})), "waveform": s.get("waveform", self.waveform),
-                "scale": s.get("scale", self.scale_v.get()),
-                "playmode": s.get("playmode", self.playmode_v.get())} for s in bs]
-        else:
-            self.bank_settings = [None] * 8
-        self.cur_bank = int(st.get("cur_bank", 0)) % 8
-        if self.banks[self.cur_bank] is None:
-            self.banks[self.cur_bank] = [{"note": None, "accent": False, "slide": False}
-                                         for _ in range(16)]
-        if self.bank_settings[self.cur_bank] is not None:
-            self._apply_settings(self.bank_settings[self.cur_bank])
-        self.steps = [dict(s) for s in self.banks[self.cur_bank]]
-        self.sel = 0
-        self._changed()
-        self.refresh()
-        if self.playing and self.audio_ok:
-            self._play_loop()
+    @staticmethod
+    def _read_project(path):
+        """Read a .tb303 file of any version into one normalised shape:
+        {"banks": [8], "settings": [8], "instr": [8], "cur": int, "top": {...}}."""
+        with open(path, "r", encoding="utf-8") as f:
+            st = json.load(f)
+        if not isinstance(st, dict) or st.get("format") != "tb303-studio":
+            raise ValueError("This file is not a TB-303 project.")
+
+        def eight(key):
+            v = st.get(key)
+            return list(v) if isinstance(v, list) and len(v) == N_BANKS else [None] * N_BANKS
+
+        banks = []
+        for b in eight("banks"):
+            banks.append(None if b is None else
+                         [{"note": s.get("note"), "accent": bool(s.get("accent")),
+                           "slide": bool(s.get("slide"))} for s in b])
+        settings = []
+        for s in eight("bank_settings"):
+            settings.append(None if s is None else {
+                "knobs": dict(s.get("knobs", {})), "waveform": s.get("waveform", "square"),
+                "scale": s.get("scale", "1/16"), "playmode": s.get("playmode", "Forward")})
+        instr = eight("bank_instruments")
+        top = {"knobs": dict(st.get("knobs", {})), "waveform": st.get("waveform", "square"),
+               "scale": st.get("scale", "1/16"), "playmode": st.get("playmode", "Forward"),
+               "preset": st.get("preset")}
+        cur = int(st.get("cur_bank", 0)) % N_BANKS
+        if banks[cur] is not None and settings[cur] is None:
+            settings[cur] = {k: top[k] for k in ("knobs", "waveform", "scale", "playmode")}
+        for i in range(N_BANKS):
+            if banks[i] is not None and not instr[i]:
+                instr[i] = {"kind": "tb303", "name": TB303_ID}     # v2: all TB-303
+        return {"banks": banks, "settings": settings, "instr": instr, "cur": cur, "top": top}
+
+    def _resolve_instr(self, desc, project_path, warnings):
+        """Instrument descriptor from a file -> instrument id usable here. A sample
+        is looked for in Instruments/, next to the project, then at its original
+        place, and copied into Instruments/ when found elsewhere."""
+        kind = (desc or {}).get("kind")
+        name = (desc or {}).get("name")
+        if kind == "builtin":
+            if name in instruments.BUILTIN:
+                return name
+            warnings.append(f"Built-in instrument “{name}” is not in this version: TB-303 used.")
+            return TB303_ID
+        if kind != "sample":
+            return TB303_ID
+        fname = desc.get("file") or name
+        iid = SAMPLE_PREFIX + fname
+        if iid in self.samples:
+            return iid
+        pdir = os.path.dirname(os.path.abspath(project_path))
+        for cand in (os.path.join(INSTRUMENTS_DIR, fname),
+                     os.path.join(pdir, "Instruments", fname),
+                     os.path.join(pdir, os.pardir, "Instruments", fname),
+                     os.path.join(pdir, "instruments", fname),          # older layout
+                     os.path.join(pdir, os.pardir, "instruments", fname),
+                     desc.get("source") or ""):
+            if cand and os.path.isfile(cand):
+                try:
+                    return self._register_sample(self._copy_into_instruments(cand),
+                                                 desc.get("base_freq"),
+                                                 origin=desc.get("source") or cand)
+                except Exception as e:
+                    warnings.append(f"Sample “{fname}” could not be read ({e}): TB-303 used.")
+                    return TB303_ID
+        warnings.append(f"Sample “{fname}” not found: TB-303 used.\n"
+                        f"   (put it in {INSTRUMENTS_DIR} and load the project again)")
+        return TB303_ID
+
+    def _apply_top(self, top):
+        for k, v in top.get("knobs", {}).items():
+            if k in self.kv:
+                lo, hi = KNOB_SPEC[k][0], KNOB_SPEC[k][1]
+                self.kv[k] = min(hi, max(lo, float(v)))
+        self.waveform = top.get("waveform", self.waveform)
+        if top.get("scale") in SCALE_MAP:
+            self.scale_v.set(top["scale"])
+        if top.get("playmode") in PLAYMODES:
+            self.playmode_v.set(top["playmode"])
+        if top.get("preset") in PRESETS:
+            self.preset_v.set(top["preset"])
+
+    def _load_all(self, P, path):
+        """Replace the open project with the whole file."""
+        was = self.playing
+        if was:
+            self._stop()
+        warnings = []
+        self._apply_top(P["top"])
+        self.banks = [None if b is None else [dict(s) for s in b] for b in P["banks"]]
+        self.bank_settings = [None if s is None else dict(s) for s in P["settings"]]
+        self.bank_instr = [self._resolve_instr(d, path, warnings) if d else TB303_ID
+                           for d in P["instr"]]
+        self._enter_bank(P["cur"])
+        self._show_project_name(path)
+        if was:
+            self._toggle_run()
+        self._report(warnings)
+
+    def _import_patterns(self, P, mapping, path):
+        """Copy patterns of the file into the open project: mapping = [(src, dst)]."""
+        was = self.playing
+        if was:
+            self._stop()
+        warnings = []
+        self._freeze_bank()
+        for src, dst in mapping:
+            b = P["banks"][src]
+            self.banks[dst] = ([dict(s) for s in b] if b is not None else
+                               [{"note": None, "accent": False, "slide": False} for _ in range(16)])
+            s = P["settings"][src]
+            self.bank_settings[dst] = dict(s) if s is not None else {
+                k: P["top"][k] for k in ("knobs", "waveform", "scale", "playmode")}
+            self.bank_instr[dst] = self._resolve_instr(P["instr"][src], path, warnings)
+        self._enter_bank(self.cur_bank)          # an import onto this pattern shows now
+        if was:
+            self._toggle_run()
+        self._report(warnings)
+
+    def _report(self, warnings):
+        if warnings:
+            messagebox.showwarning("Project loaded with warnings", "\n\n".join(warnings))
+
+    def _show_project_name(self, path):
+        self._project_path = path
+        self.root.title("TB-303 Studio — " + os.path.basename(path))
 
     def _save_project(self):
+        self._freeze_bank()
+        rows = [(i, self._summary(self.banks[i], self._instr_label(self.bank_instr[i])))
+                for i in range(N_BANKS)]
+        dlg = PatternDialog(self.root, "Save project", rows, "save")
+        if dlg.result is None:
+            return
+        include = [src for src, _ in dlg.result]
+        last = getattr(self, "_project_path", None)
         path = filedialog.asksaveasfilename(
-            defaultextension=".tb303", filetypes=[("Projet TB-303", "*.tb303"), ("Tous", "*.*")],
-            initialfile="mon_pattern.tb303")
+            title="Enregistrer le projet",
+            defaultextension=".tb303", initialdir=PROJECTS_DIR,
+            initialfile=os.path.basename(last) if last else "mon_projet.tb303",
+            filetypes=[("Projet TB-303", "*.tb303"), ("Tous les fichiers", "*.*")])
         if not path:
             return
         try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(self._project_state(), f, indent=1, ensure_ascii=False)
+            state = self._project_state(include)
+            tmp = path + ".part"                 # never leave a half-written project
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=1, ensure_ascii=False)
+            os.replace(tmp, path)
         except Exception as e:
             messagebox.showerror("Cannot save", str(e))
+            return
+        if not include:
+            self._show_project_name(path)
 
     def _load_project(self):
         path = filedialog.askopenfilename(
-            filetypes=[("Projet TB-303", "*.tb303"), ("Tous", "*.*")])
+            title="Ouvrir un projet",
+            initialdir=PROJECTS_DIR,
+            filetypes=[("Projet TB-303", "*.tb303"), ("Tous les fichiers", "*.*")])
         if not path:
             return
         try:
-            with open(path, "r", encoding="utf-8") as f:
-                st = json.load(f)
-            if st.get("format") != "tb303-studio":
-                raise ValueError("This file is not a TB-303 project.")
-            self._apply_project(st)
+            P = self._read_project(path)
+        except Exception as e:
+            messagebox.showerror("Cannot open", str(e))
+            return
+        rows = [(i, self._summary(P["banks"][i], self._descriptor_label(P["instr"][i])))
+                for i in range(N_BANKS) if P["banks"][i] is not None]
+        if not rows:
+            messagebox.showinfo("Load project", "This project contains no pattern.")
+            return
+        self._freeze_bank()
+        used = {i for i in range(N_BANKS) if self._pattern_notes(self.banks[i])}
+        dlg = PatternDialog(self.root, "Load — " + os.path.basename(path), rows,
+                            "load", used)
+        if dlg.result is None:
+            return
+        try:
+            if dlg.result:
+                self._import_patterns(P, dlg.result, path)
+            else:
+                self._load_all(P, path)
         except Exception as e:
             messagebox.showerror("Cannot open", str(e))
 
@@ -990,16 +1399,205 @@ class SkinStudio:
         self._changed()
 
 
+class PatternDialog(tk.Toplevel):
+    """Modal list of patterns, one tick box each.
+
+    mode "save": rows are the 8 patterns of the open project.
+    mode "load": rows are the patterns found in a file, each with a target slot.
+
+    After it closes, .result is None if cancelled, otherwise the list of
+    (source, target) pairs that were ticked (0-based) -- an EMPTY list meaning
+    nothing was ticked, i.e. "everything".
+    """
+
+    HINT = {
+        "save": "Tick the patterns to save. Nothing ticked = save all 8.\n"
+                "Each pattern keeps its number, its sound and its instrument.",
+        "load": "Tick the patterns to import into the open project, and choose\n"
+                "where each one goes. Nothing ticked = load the whole project,\n"
+                "replacing the one that is open.",
+    }
+
+    def __init__(self, master, title, rows, mode, used_slots=()):
+        super().__init__(master)
+        self.mode, self.rows, self.used = mode, rows, set(used_slots)
+        self.result = None
+        self.title(title)
+        self.resizable(False, False)
+        self.transient(master)
+
+        body = ttk.Frame(self, padding=14)
+        body.grid(sticky="nsew")
+        ttk.Label(body, text=self.HINT[mode], justify="left").grid(
+            row=0, column=0, columnspan=5, sticky="w", pady=(0, 10))
+
+        self.ticks, self.targets, self.marks = [], [], []
+        slots = [str(i + 1) for i in range(N_BANKS)]
+        for r, (idx, summary) in enumerate(rows, start=1):
+            v = tk.BooleanVar(value=False)
+            ttk.Checkbutton(body, text=f"Pattern {idx + 1}", variable=v,
+                            command=self._update).grid(row=r, column=0, sticky="w", pady=2)
+            ttk.Label(body, text=summary, foreground="#555").grid(
+                row=r, column=1, sticky="w", padx=(10, 16))
+            self.ticks.append(v)
+            if mode == "load":
+                ttk.Label(body, text="→ pattern").grid(row=r, column=2, sticky="e")
+                t = tk.StringVar(value=str(idx + 1))
+                cb = ttk.Combobox(body, textvariable=t, values=slots, width=3, state="readonly")
+                cb.grid(row=r, column=3, padx=(4, 8))
+                cb.bind("<<ComboboxSelected>>", lambda e: self._update())
+                self.targets.append(t)
+                m = ttk.Label(body, text="", width=22)
+                m.grid(row=r, column=4, sticky="w")
+                self.marks.append(m)
+
+        quick = ttk.Frame(body)
+        quick.grid(row=len(rows) + 1, column=0, columnspan=5, sticky="w", pady=(8, 0))
+        ttk.Button(quick, text="Tick all", command=lambda: self._set_all(True)).pack(side="left")
+        ttk.Button(quick, text="Clear", command=lambda: self._set_all(False)).pack(side="left", padx=6)
+
+        self.msg = ttk.Label(body, text="", foreground="#b03a1a")
+        self.msg.grid(row=len(rows) + 2, column=0, columnspan=5, sticky="w", pady=(8, 0))
+
+        foot = ttk.Frame(body)
+        foot.grid(row=len(rows) + 3, column=0, columnspan=5, sticky="e", pady=(10, 0))
+        ttk.Button(foot, text="Cancel", command=self.destroy).pack(side="right")
+        self.ok = ttk.Button(foot, text="", command=self._accept)
+        self.ok.pack(side="right", padx=(0, 8))
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Return>", lambda e: self._accept())
+        self._update()
+        self.update_idletasks()
+        try:                                     # centre over the studio window
+            x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
+            y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 3
+            self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+        self.grab_set()
+        self.ok.focus_set()
+        self.wait_window()
+
+    def _set_all(self, on):
+        for v in self.ticks:
+            v.set(on)
+        self._update()
+
+    def _pairs(self):
+        out = []
+        for k, v in enumerate(self.ticks):
+            if v.get():
+                src = self.rows[k][0]
+                dst = int(self.targets[k].get()) - 1 if self.mode == "load" else src
+                out.append((src, dst))
+        return out
+
+    def _update(self):
+        pairs = self._pairs()
+        n = len(pairs)
+        problem = ""
+        if self.mode == "save":
+            label = "Save all 8 patterns…" if n == 0 else \
+                f"Save {n} pattern{'s' if n > 1 else ''}…"
+        else:
+            label = "Load all (replaces the open project)" if n == 0 else \
+                f"Import {n} pattern{'s' if n > 1 else ''}"
+            dsts = [d for _, d in pairs]
+            for k, v in enumerate(self.ticks):
+                d = int(self.targets[k].get()) - 1
+                if not v.get():
+                    self.marks[k].configure(text="")
+                elif dsts.count(d) > 1:
+                    self.marks[k].configure(text="same target!", foreground="#b03a1a")
+                elif d in self.used:
+                    self.marks[k].configure(text=f"replaces pattern {d + 1}", foreground="#b8730a")
+                else:
+                    self.marks[k].configure(text="empty slot", foreground="#3c7a3c")
+            if len(set(dsts)) != len(dsts):
+                problem = "Two patterns are sent to the same place: change one target."
+        self.msg.configure(text=problem)
+        self.ok.configure(text=label, state="disabled" if problem else "normal")
+
+    def _accept(self):
+        if str(self.ok.cget("state")) == "disabled":
+            return
+        self.result = self._pairs()
+        self.destroy()
+
+
+LOG_PATH = None                         # set when the studio writes to a log file
+
+
+def _log_to_file_without_terminal():
+    """Started from the desktop icon there is no terminal: keep what the studio
+    prints (MIDI, errors) in TB303-Studio/tb303_studio.log, rewritten each run."""
+    global LOG_PATH
+    try:
+        if sys.stdout is not None and sys.stdout.isatty():
+            return
+    except (AttributeError, ValueError):
+        pass
+    try:
+        path = os.path.join(ROOT, "tb303_studio.log")
+        log = open(path, "w", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stderr = log
+        LOG_PATH = path
+        print(time.strftime("TB-303 Studio started %Y-%m-%d %H:%M:%S"), "-", sys.executable)
+    except OSError:
+        pass
+
+
+def _tools_next_to_python_on_path():
+    """From the icon a conda env is not activated: put its bin/ on PATH, as the
+    terminal does, so ffmpeg/ffprobe/ffplay installed with conda are found."""
+    bindir = os.path.dirname(sys.executable)
+    path = os.environ.get("PATH", "")
+    if bindir and bindir not in path.split(os.pathsep):
+        os.environ["PATH"] = bindir + (os.pathsep + path if path else "")
+
+
 def main():
-    here = os.path.dirname(os.path.abspath(__file__))
+    _log_to_file_without_terminal()
+    _tools_next_to_python_on_path()
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    image = args[0] if args else os.path.join(here, "tb303_skin.png")
+    image = args[0] if args else _find_skin()
+    root = tk.Tk(className=WM_CLASS)
+    if os.path.exists(ICON_PATH):
+        try:
+            root._icon = tk.PhotoImage(file=ICON_PATH)
+            root.iconphoto(True, root._icon)
+        except tk.TclError:
+            pass
     if not os.path.exists(image):
+        root.withdraw()
+        messagebox.showerror("TB-303 Studio", f"Skin image not found:\n{image}")
         raise SystemExit(f"Image introuvable : {image}")
-    root = tk.Tk()
-    app = SkinStudio(root, image)
+    try:
+        app = SkinStudio(root, image)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        root.withdraw()
+        where = f"Details in {LOG_PATH}" if LOG_PATH else "Details in the terminal."
+        messagebox.showerror("TB-303 Studio could not start", f"{type(e).__name__}: {e}\n\n{where}")
+        raise
+
+    # --- MIDI control surface (optional): knobs, pads and keys from a
+    # controller such as the Akai MPK mini Plus. Missing hardware, a missing
+    # mido/python-rtmidi, or no port at all must never stop the studio from
+    # opening: the mouse still drives everything. Launch with --nomidi to skip.
+    app.midi = None
+    if "--nomidi" not in sys.argv:
+        try:
+            import midi_in
+            app.midi = midi_in.attach(app)
+        except (Exception, SystemExit) as e:        # midi_in exits when mido is missing
+            print(f"MIDI off ({e}) — mouse only")
 
     def _on_close():
+        if app.midi is not None:
+            app.midi.close()
         app.close()
         root.destroy()
 

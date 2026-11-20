@@ -1,6 +1,7 @@
 """
 instruments.py - non-303 voices for TB-303 Studio: a simple Sampler (load a WAV and
-play it pitched per step) plus built-in synthetic instruments (sax, brass).
+play it pitched per step) plus built-in synthetic instruments (sax, brass,
+didgeridoo).
 
 Used by the studio when the chosen instrument isn't the TB-303 synth. Pure NumPy
 (SciPy optional, only for nicer filtering); renders a whole pattern to a buffer that
@@ -222,6 +223,73 @@ def synth_brass(freq, dur, accent=False, sr=SR):
     return sig / m * (0.95 if accent else 0.8)
 
 
+# ---------------------------------------------------------------- synthetic didgeridoo
+def _lorentz(f, centre, width):
+    """Resonance curve: 1 at the centre, falling to 1/2 one `width` away."""
+    return 1.0 / (1.0 + ((f - centre) / width) ** 2)
+
+
+def _band_noise(n, lo, hi, sr=SR):
+    """White noise limited to lo..hi Hz with an FFT mask (no SciPy needed)."""
+    if n < 8:
+        return np.zeros(n)
+    spec = np.fft.rfft(np.random.randn(n))
+    f = np.fft.rfftfreq(n, 1.0 / sr)
+    spec[(f < lo) | (f > hi)] = 0.0
+    x = np.fft.irfft(spec, n)
+    return x / (np.max(np.abs(x)) + 1e-9)
+
+
+def synth_didgeridoo(freq, dur, accent=False, sr=SR):
+    """Didgeridoo drone: a lip buzz coloured by the player's moving vocal tract.
+
+    Built additively, harmonic by harmonic, so the formants can be set per
+    harmonic and per instant with no filter -- and so it needs no SciPy. Three
+    things make it read as a didgeridoo rather than a bass:
+      - a strong fundamental with weak low even harmonics (a tube closed at
+        the lips),
+      - a formant band between about 1 and 2 kHz that opens at the attack
+        ("wa") and then rocks slowly between "oo" and "ee",
+      - a little breath noise riding on the buzz.
+    An accent is a sharper, brighter tongue stroke. It sits best between
+    A1 and G2 (55 to 98 Hz), where real instruments are tuned.
+    """
+    n = max(1, int(dur * sr))
+    t = np.arange(n) / sr
+    # The lips scoop up onto the note, then the pitch breathes very slightly.
+    f = freq * (1.0 - 0.025 * np.exp(-t * 30.0) + 0.003 * np.sin(2 * np.pi * 0.7 * t))
+    phase = 2 * np.pi * np.cumsum(f) / sr
+
+    # Vocal tract: the mouth opens at the attack, then the tongue rocks.
+    opening = 1.0 - np.exp(-t / (0.018 if accent else 0.050))
+    rock = 0.5 - 0.5 * np.cos(2 * np.pi * 2.3 * t)
+    f_low = 420.0 + 180.0 * opening
+    f_high = 950.0 + opening * ((850.0 if accent else 600.0) + 600.0 * rock)
+    g_high = 5.0 if accent else 3.4
+
+    # Nothing useful above ~4.5 kHz in a didgeridoo; also stay under Nyquist.
+    kmax = max(1, min(int(4500.0 / freq), int(0.45 * sr / freq), 120))
+    sig = np.zeros(n)
+    for k in range(1, kmax + 1):
+        fk = k * f
+        amp = k ** -0.8 * (0.45 if (k % 2 == 0 and k <= 8) else 1.0)
+        gain = (0.12 + 1.6 * np.exp(-fk / 400.0)      # the wooden body of the drone
+                + 0.9 * _lorentz(fk, f_low, 160.0)
+                + g_high * _lorentz(fk, f_high, 230.0))
+        if k == 1:
+            gain = gain + 0.5                         # the drone note itself
+        sig += amp * gain * np.sin(k * phase)
+    sig /= np.max(np.abs(sig)) + 1e-9
+
+    # Breath: a puff at the attack, then a hiss that pulses with the lips.
+    breath = (_band_noise(n, 900.0, 4200.0, sr) * (0.6 + 0.4 * np.sin(phase))
+              * (0.035 + 0.12 * np.exp(-t * 45.0)))
+    sig = np.tanh((sig + breath) * (1.8 if accent else 1.4))
+    sig *= _adsr(n, sr, atk=0.03, rel=0.09)
+    m = np.max(np.abs(sig)) + 1e-9
+    return sig / m * (0.95 if accent else 0.8)
+
+
 # ---------------------------------------------------------------- sampler
 class Sampler:
     def __init__(self, samples, base_freq=None, sr=SR):
@@ -330,4 +398,13 @@ def render_pattern(steps, voice, bpm=130, subdiv=4, swing=0.0, play_mode="forwar
     return np.column_stack([buf, buf])
 
 
-BUILTIN = {"Sax": synth_sax, "Brass": synth_brass}
+# Built-in voices by menu name. To add one: write synth_xxx(freq, dur, accent, sr)
+# returning a mono array and list it here -- the studio's Instrument menu follows.
+BUILTIN = {"Sax": synth_sax, "Brass": synth_brass, "Didgeridoo": synth_didgeridoo}
+
+# How the real-time engine pre-renders a voice: (base note in Hz, seconds).
+# It records the voice once and transposes that recording, which moves the
+# formants along with the pitch -- so a voice is best recorded near where it is
+# played, and long enough for the notes it has to hold. Voices not listed here
+# use 220 Hz for 1.8 s.
+REFERENCE = {"Didgeridoo": (73.42, 4.0)}      # D2, long enough to hold a drone
