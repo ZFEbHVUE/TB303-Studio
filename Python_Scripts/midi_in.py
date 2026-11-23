@@ -131,7 +131,8 @@ CHORD_WINDOW = 0.030         # seconds
 LOG_ACTIONS = True           # print every action to the terminal
 POLL_MS = 8                  # how often tk drains the queue (~125 Hz)
 N_STEPS = 16
-BADGE_XY = (1010, 728)       # where the PLAY/WRITE badge goes, in skin pixels
+BADGE_XY = (1325, 728)       # right end of the PLAY/WRITE badge, in skin pixels: the end of
+                             # the bottom bar's dark panel; the studio's status line stops before it
 
 # ===========================================================================
 
@@ -286,20 +287,27 @@ class MidiBridge:
     # -- the PLAY / WRITE badge -------------------------------------------
 
     def _draw_badge(self):
-        """Painted on the studio's canvas under our own tag.
+        """Painted on the studio's canvas under our own tag, right-aligned at the
+        end of the bottom bar.
 
-        refresh() only clears the "dyn" tag, so this survives redraws and the
-        studio itself needs no modification to show it.
+        refresh() only clears the "dyn" tag, so this survives redraws. The studio
+        ends its status line before the badge, so it refreshes once whenever the
+        badge changes (not on every action: knobs send many).
         """
         try:
             cv, S = self.app.cv, self.app.S
-            cv.delete("midi")
             play = self.mode == "play"
+            text = "MIDI ▸ PLAY" if play else "MIDI ● WRITE"
+            drawn = (text, S(BADGE_XY[0]), S(BADGE_XY[1]))
+            if drawn == getattr(self, "_badge", None) and cv.find_withtag("midi"):
+                return
+            cv.delete("midi")
             cv.create_text(
-                S(BADGE_XY[0]), S(BADGE_XY[1]), anchor="w",
-                text=("MIDI ▸ PLAY" if play else "MIDI ● WRITE"),
+                S(BADGE_XY[0]), S(BADGE_XY[1]), anchor="e", text=text,
                 fill=("#8fd4a0" if play else "#ffcf6b"),
                 font=("Georgia", max(8, int(S(11))), "bold"), tags="midi")
+            self._badge = drawn
+            self.app.refresh()                      # the status line makes room
         except Exception:
             pass                                    # cosmetic, never fatal
 

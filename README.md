@@ -37,7 +37,8 @@ packages is under [Requirements](#requirements-and-installation), and
 ```
 tb303-studio/
 ├── Python_Scripts/    all the Python code
-├── docs/              images: the skin, the icon, screenshots, photos
+├── docs/              images: the steampunk skin, the icon, screenshots, photos
+├── doc/skin/          the other skins (Skin menu)
 ├── Projects/          .tb303 projects (a few examples included)
 └── Instruments/       your sample library (created on first launch)
 ```
@@ -49,13 +50,17 @@ tb303-studio/
 | `tb303_rt.py` | **Real-time** TB-303 engine (sounddevice callback + Numba DSP). |
 | `instruments.py` | The other voices: a **sampler** + synthetic **Sax**, **Brass** and **Didgeridoo**. |
 | `instruments_rt.py` | **Real-time** engine for the instruments (sample playback + the 303 filter). |
+| `skin_lighting.py` | The lights of the other skins, which follow the sound, the step played and the key pressed. |
+| `live_recording.py` | Records what you hear (the RECORD button) to a WAV file. |
 | `midi_in.py` | **MIDI control surface** for the Akai MPK mini Plus, loaded by the studio. |
 | `midi_sniff.py` | Shows what a MIDI controller really sends, to write or check a mapping. |
+| `audio_to_tb303.py` | Turns a recorded bass line (WAV, MP3, FLAC...) into a pattern: notes, accents, slides and sound, with drums softened first when heard or asked. Behind *File -> Import pattern from audio...*; also works on its own. |
 | `studio_file_dialog.py` | The file chooser: sizes, dates, search, favourites, *Listen* on audio files. |
 | `install_launcher.py` | Creates the desktop icon and the applications-menu entry. |
 | `tb303_studio-v1.0.py` | The first version, kept for reference. Start it with the skin as argument: `python3 Python_Scripts/tb303_studio-v1.0.py docs/tb303_skin.png`. |
 
-The skin is `docs/tb303_skin.png` and the icon `docs/tb303_icon.png`. Keep the folders
+The steampunk skin is `docs/tb303_skin.png`, the others are in `doc/skin/`, and the icon
+is `docs/tb303_icon.png`. Keep the folders
 together: the studio finds everything from the place of `Python_Scripts/`, whatever the
 top folder is called.
 
@@ -88,6 +93,11 @@ patterns of another project into the open one, at the places you choose.
 **Play it from a MIDI keyboard.** With an **Akai MPK mini Plus**, the knobs, pads,
 wheels, joystick and transport buttons drive the studio, and the keys write the notes —
 accent and slide included. See [MIDI control](#midi-control-akai-mpk-mini-plus).
+
+**Rebuild a pattern from a recording.** Give it a TB-303 line (best alone, drums can be
+softened first) and it writes the pattern into one of the 8 slots: tempo, swing, notes, slides, accents, tuning, and the
+knob settings that make the studio sound closest to it. See
+[Import a pattern from audio](#import-a-pattern-from-audio).
 
 **Load and save in any format.** Samples load from **WAV, MP3, FLAC, OGG, AIFF, M4A, AAC,
 OPUS, WMA** (via `soundfile`/`ffmpeg`, with a built-in WAV reader as fallback, 24-bit
@@ -163,9 +173,18 @@ Everything is clickable on the image: the **WAVEFORM** toggle, the **10 knobs**
 (TUNING, CUT OFF, RESONANCE, ENV MOD, DECAY, ACCENT, TEMPO, DIST, VOLUME, SHUFFLE),
 the **SCALE / PLAY MODE / PRESET** menus, **PATTERN 1-8**, **RUN/STOP**, the 3-octave
 **keyboard** (with working black keys/sharps), the per-step modifiers
-**ACCENT / SLIDE / OCT down / OCT up / REST**, the **16-step** strip, and **SAVE WAV /
+**ACCENT / SLIDE / OCT down / OCT up / REST**, the **16-step** strip, and **RECORD /
 CLEAR / DEMO**. Adjust a knob with the mouse wheel or a vertical drag. The menu bar holds
-**File** (projects, export) and **Instrument**.
+**File** (projects, export), **Instrument** and **Skin**.
+
+**Skin** changes the panel: the steampunk one, or ten others (Cyberpunk, Dub, Reggae,
+TB-303 Classic...). On those, small lights follow the sound, the step being played and
+the key you press; on the steampunk panel the three lamps follow the sound.
+
+**RECORD** records what you hear, live, knob moves included: click it to start (it then
+reads STOP REC), click again to stop and choose where to save the WAV. Cancelling asks
+whether to throw the take away or keep it under SAVE TAKE. Changing pattern during a take
+is kept in it.
 
 ### Programming a pattern
 
@@ -274,7 +293,7 @@ same name are both kept (`kick.wav`, `kick-2.wav`).
 Whatever the instrument, the sound runs through the **303 resonant filter + distortion**,
 so all the filter knobs stay active — you can filter and saturate a real sax into an acid
 line. **WAVEFORM** (saw/sqr) only changes the TB-303: it is the 303's own oscillator.
-**SAVE WAV** exports 4 loops of the current pattern with its instrument, exactly as you
+*File -> Export WAV...* writes 4 loops of the current pattern with its instrument, as you
 hear it.
 
 **Tips for samples.** The sampler is *melodic*: it works best with a **single sustained
@@ -295,7 +314,8 @@ harp, brass...).
 |---|---|---|
 | Save project | File -> Save project... | **Ctrl+S** |
 | Open project | File -> Open project... | **Ctrl+O** |
-| Export audio | File -> Export WAV... / **SAVE WAV** | — |
+| Export audio | File -> Export WAV... | — |
+| Record what you play | **RECORD** | — |
 
 Saving and opening both show the 8 patterns with their instrument and number of notes,
 and the file chooser opens in `Projects/`:
@@ -321,6 +341,62 @@ which file to put back. Projects saved by older versions still open.
 
 ---
 
+## Import a pattern from audio
+
+*File -> Import pattern from audio...* turns a recording of a bass line into a pattern.
+Choose the audio file (WAV, MP3, FLAC, OGG...), then the pattern that receives it — an
+empty one is offered first. The analysis takes about a minute and the studio stays
+usable meanwhile; the status line shows where it is. At the end the pattern is selected
+and a message sums up what was found. Save the project to keep it.
+
+What comes out of the audio:
+
+- **read from it**: the tempo and swing, the note of every step, rests, slides (a note
+  that glides into the next without a new attack), accents, and the tuning;
+- **fitted**: CUT OFF, RESONANCE, ENV MOD, DECAY, ACCENT, DIST, VOLUME and the waveform.
+  The studio's own engine plays the pattern again and again while the knobs move, until
+  it sounds as close as it can to the recording. These are the closest settings *in this
+  studio*, not those of the machine that made the recording, and the effects of a mix
+  (reverb, delay, compression) end up folded into them.
+
+It works best on an **isolated** line (a single voice, no drums) holding at least one full
+16-step loop. Step 1 is where the sound begins: a note, or a beat of a track cut on the
+beat. The file can also begin inside a note (a cut made by hand): the steps are then
+placed from the attacks and step 1 is the first full step, set a few milliseconds ahead
+of them, since the notes of a played line wander a little around the steps. If the line changes,
+give the start of the loop to use in *Loop starts at*. If the tempo is not found, type it
+in *Tempo*; that is also needed for a line whose notes all fall every other step (on the
+off-beats only), which reads at half tempo otherwise. *Scale* only decides how the tempo
+is written (94.9 BPM in 1/16 and 126.5 BPM in 1/8T are the same steps). Steps whose note
+was uncertain are listed in the final message: check them by ear.
+
+Slid notes are read by letting the engine play the candidate notes: at acid tempos a
+glide has not reached its note when the step ends, so the plain pitch reading of a big
+slide (an octave, a fifth) would fall a semitone short.
+
+**Drums play along** is for a line taken from a track. The kick is taken out when every
+beat repeats the same one and the bass ducks under it (sidechain, as in most acid
+techno); the other drum hits are softened. Expect a few wrong notes: in tests with a
+drum machine on top of a known line, 0 to 5 of the 16 notes came out wrong depending on
+the mix, against none for the line alone. Other instruments (chords, pads, vocals) are
+not taken out. The box does not need ticking when hi-hats, snares or claps play along:
+their short noisy hits above 5 kHz are heard, the drums are softened all the same and the
+final message says so. Tick it when the drums are only a kick. On a line alone no drums
+are heard, and the audio is read as it is.
+
+The same tool runs from the command line and writes a `.tb303` project:
+
+```bash
+python3 Python_Scripts/audio_to_tb303.py line.wav                 # -> line_from_audio.tb303
+python3 Python_Scripts/audio_to_tb303.py line.mp3 --start 0.24 --bpm 128 -o acid.tb303
+python3 Python_Scripts/audio_to_tb303.py track.mp3 --mix          # drums play along
+python3 Python_Scripts/audio_to_tb303.py line.wav --no-mix        # never soften drums
+```
+
+Other options: `--tuning`, `--shuffle`, `--scale`, `--iterations` (fitting effort).
+
+---
+
 ## Under the hood: the two real-time engines
 
 `tb303_rt.py` and `instruments_rt.py` share the same idea: a sounddevice callback fills
@@ -328,15 +404,18 @@ the audio buffer block by block, reading the parameters and the pattern on **eve
 so a knob change is heard immediately. The per-sample DSP is compiled with **Numba**
 (`@njit`). `tb303_rt.py` synthesizes the 303 (oscillator + ladder); `instruments_rt.py`
 reads a **sample** at a pitch-dependent rate (linear interpolation, continuous position)
-and runs it through the **same ladder filter**. Only one audio stream runs at a time:
-going from a 303 pattern to an instrument pattern hands the device from one engine to the
-other. Without Numba/sounddevice, both fall back to a pygame render-and-loop.
+and runs it through the **same ladder filter**. Both engines keep their audio stream
+open when the sound system allows it (PulseAudio, PipeWire): changing pattern only
+changes which one plays. A sound card that takes one stream at a time gets them in turn.
+Numba compiles each engine at launch, in the background (a few seconds the first time,
+then from its cache). Without Numba/sounddevice, both fall back to a pygame
+render-and-loop.
 
-**SAVE WAV** goes through the engine you hear: it sets up a second copy of the engine
-that plays the current pattern — same knobs, same pattern and play mode, same sample —
-and lets it compute 4 loops. The file is therefore exactly what comes out of the
+*File -> Export WAV...* goes through the engine you hear: it sets up a second copy of the
+engine that plays the current pattern — same knobs, same pattern and play mode, same
+sample — and lets it compute 4 loops. The file is therefore exactly what comes out of the
 speakers, at the knob positions of the moment. (Knob moves made *during* playback are not
-in it: SAVE WAV renders, it does not record.)
+in it: Export WAV renders; RECORD records.)
 
 You can test the engines on their own:
 
@@ -350,7 +429,11 @@ python3 Python_Scripts/instruments_rt.py    # pre-renders a sax, plays the demo,
 ## Troubleshooting
 
 **No sound / RUN does nothing.** You need an audio backend: `pip install numba sounddevice`
-(real-time) or `pip install pygame` (fallback). SAVE WAV works without audio.
+(real-time) or `pip install pygame` (fallback). *File -> Export WAV...* works without audio.
+
+**The studio freezes.** After 8 s without answering it writes where each of its parts
+is waiting, in the terminal (or in `tb303_studio.log` when started from the icon). Send
+that text with the bug report. `kill -USR1 <pid>` writes the same at any time.
 
 **The MPK does nothing.** The terminal (or `tb303_studio.log`) says why at launch:
 `MIDI off (No module named 'rtmidi')` -> `pip install python-rtmidi`;
@@ -372,6 +455,12 @@ the TB-303's oscillator.
 energy is at the end and whose pitch can't be detected — the melodic sampler retriggers
 from the (quiet) start each step. Use a **sustained single note** instead, or trim the
 silent head.
+
+**Import pattern from audio says the tempo is ambiguous, or the notes are wrong.** The
+line is probably not isolated enough (drums, chords, another bass). If drums play along,
+tick *Drums play along*; otherwise use a cleaner extract, or type the tempo and the start
+of the loop in the import window. A wrong note is
+quicker to fix on the keyboard than to re-run.
 
 **Can't load an MP3/M4A.** Install `soundfile` or `ffmpeg`. WAV/FLAC/OGG/AIFF work via
 soundfile; MP3/M4A/etc. go through ffmpeg.

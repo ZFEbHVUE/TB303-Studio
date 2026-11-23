@@ -12,22 +12,22 @@
   8
  ],
  "knobs": {
-  "tuning": 450.3937,
-  "cutoff": 0.1811,
-  "resonance": 1.0,
-  "env_mod": 0.3543,
-  "decay": 0.4252,
-  "accent": 0.6378,
-  "bpm": 109.0,
-  "distortion": 1.0,
-  "volume": 0.8976,
+  "tuning": 452.85,
+  "cutoff": 0.1374,
+  "resonance": 0.893,
+  "env_mod": 0.4653,
+  "decay": 0.6609,
+  "accent": 0.9998,
+  "bpm": 94.8795,
+  "distortion": 0.6767,
+  "volume": 0.78,
   "shuffle": 0.0
  },
- "waveform": "square",
- "scale": "1/8T",
+ "waveform": "saw",
+ "scale": "1/16",
  "playmode": "Forward",
  "preset": "Classic Bass",
- "cur_bank": 0,
+ "cur_bank": 4,
  "banks": [
   [
    {
@@ -357,7 +357,88 @@
     "slide": false
    }
   ],
-  null,
+  [
+   {
+    "note": "C#2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "B1",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C#2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "E2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C#2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C#3",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "G#2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C#2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "B1",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C#3",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C#2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "E2",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C#2",
+    "accent": true,
+    "slide": false
+   },
+   {
+    "note": "C#3",
+    "accent": false,
+    "slide": false
+   },
+   {
+    "note": "C#2",
+    "accent": false,
+    "slide": true
+   },
+   {
+    "note": "C#2",
+    "accent": false,
+    "slide": false
+   }
+  ],
   null,
   null,
   null
@@ -431,7 +512,23 @@
    "scale": "1/16",
    "playmode": "Reverse"
   },
-  null,
+  {
+   "knobs": {
+    "tuning": 452.85,
+    "cutoff": 0.1374,
+    "resonance": 0.893,
+    "env_mod": 0.4653,
+    "decay": 0.6609,
+    "accent": 0.9998,
+    "bpm": 94.8795,
+    "distortion": 0.6767,
+    "volume": 0.78,
+    "shuffle": 0.0
+   },
+   "waveform": "saw",
+   "scale": "1/16",
+   "playmode": "Forward"
+  },
   null,
   null,
   null
@@ -445,7 +542,7 @@
    "kind": "sample",
    "name": "didgeridoo_gong_ancrage.flac",
    "file": "didgeridoo_gong_ancrage.flac",
-   "source": "/home/stphnpro/TB303-Studio/instruments/didgeridoo_gong_ancrage.flac",
+   "source": "/home/stphnpro/TB303-Studio/Instruments/didgeridoo_gong_ancrage.flac",
    "base_freq": 64.0988
   },
   {
@@ -456,7 +553,10 @@
    "kind": "tb303",
    "name": "TB-303"
   },
-  null,
+  {
+   "kind": "tb303",
+   "name": "TB-303"
+  },
   null,
   null,
   null

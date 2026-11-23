@@ -235,6 +235,7 @@ class RealtimeEngine:
         self.nsteps = 16
         self._lock = threading.Lock()
         self.stream = None
+        self.output_tap = None
         self.level = 0.0                         # smoothed output level for VU meters
         # default values
         d = {"cutoff": 0.4, "resonance": 0.5, "env_mod": 0.5, "decay": 0.4,
@@ -286,6 +287,9 @@ class RealtimeEngine:
             self.state[S_PREVN] = dur * self.sr
 
     def _callback(self, outdata, frames, time_info, status):
+        if not _ready.is_set():                  # still compiling (warm_up)
+            outdata.fill(0)
+            return
         buf = np.empty(frames, dtype=np.float64)
         with self._lock:
             synth_block(buf, frames, self.state, self.params,
@@ -295,21 +299,56 @@ class RealtimeEngine:
         self.level = peak if peak > self.level else self.level * 0.82   # fast rise, slow fall
         outdata[:, 0] = buf
         outdata[:, 1] = buf
+        tap = self.output_tap
+        if tap is not None:
+            tap(outdata)
 
     def get_level(self):
         return self.level
 
+    def get_step(self):
+        return int(self.state[S_STEP])
+
     def start(self):
         import sounddevice as sd
+        if not _ready.is_set():
+            threading.Thread(target=warm_up, name="tb303_rt warm-up", daemon=True).start()
         if self.stream is None:
-            self.stream = sd.OutputStream(samplerate=self.sr, channels=2,
-                                          blocksize=self.blocksize, dtype="float32",
-                                          callback=self._callback)
-            self.stream.start()
+            stream = sd.OutputStream(samplerate=self.sr, channels=2,
+                                     blocksize=self.blocksize, dtype="float32",
+                                     callback=self._callback)
+            try:
+                stream.start()
+            except Exception:
+                stream.close()
+                raise
+            self.stream = stream
 
     def stop(self):
-        if self.stream is not None:
-            self.stream.stop(); self.stream.close(); self.stream = None
+        stream, self.stream = self.stream, None
+        if stream is not None:
+            try:
+                stream.abort()      # stop() waits for the queued audio to play out
+            finally:
+                stream.close()
+
+
+# Numba compiles synth_block on its first call. Done inside the audio callback, that
+# took seconds with the engine lock held: the studio, waiting for that lock, froze.
+_ready = threading.Event()
+_warming = threading.Lock()
+
+
+def warm_up():
+    """Compile the DSP now, outside the audio thread (the callback stays silent until
+    then). Safe to call from any thread, more than once."""
+    with _warming:
+        if not _ready.is_set():
+            e = RealtimeEngine()
+            buf = np.zeros(e.blocksize)
+            synth_block(buf, len(buf), e.state, e.params, e.pat_f, e.pat_a, e.pat_s,
+                        e.nsteps, float(e.sr))
+            _ready.set()
 
 
 DEMO_PATTERN = ["C2", "C2~", "C3", "C2+", "D#2", "C2~", "C3", "A#1",

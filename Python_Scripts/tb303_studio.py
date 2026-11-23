@@ -3,16 +3,19 @@
 tb303_studio.py - skinned GUI: the panel is an image (tb303_skin.png), with
 functional controls overlaid at coordinates taken from the red markers.
 
-Lives in Python_Scripts/ with tb303.py and the other modules; the skin is
-docs/tb303_skin.png. Requires numpy + Pillow; pygame optional (also tb303_rt for
-real-time playback). Run: python Python_Scripts/tb303_studio.py, or the desktop
-icon made by Python_Scripts/install_launcher.py.
+Lives in Python_Scripts/ with tb303.py and the other modules. The Art Controls
+skins are in doc/skin/. Requires numpy and Pillow. Pygame is optional, as is
+tb303_rt for real-time playback. Run python Python_Scripts/tb303_studio.py or
+use the desktop icon made by Python_Scripts/install_launcher.py.
 """
-import sys, os, json, math, time, shutil, filecmp
+import sys, os, json, math, time, shutil, filecmp, subprocess, tempfile, threading, queue
 import numpy as np
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, filedialog, messagebox
 from tb303 import TB303, DEMO_PATTERN, parse_step, apply_play_mode
+from live_recording import MixerOutputTap, WaveTake
+from skin_lighting import STYLES, SkinLights
 import instruments
 import instruments_rt
 try:
@@ -79,14 +82,68 @@ SKIN_MAP = {
         "run": [148, 437, 55, 33], "stop": [149, 542, 54, 31],
         "accent": [1074, 461, 44, 16], "slide": [1234, 461, 37, 15],
         "oct_down": [1379, 461, 35, 14], "oct_up": [1512, 462, 36, 14], "rest": [1646, 461, 32, 14],
-        "save": [455, 728, 63, 16], "clear": [629, 729, 46, 17], "demo": [783, 728, 43, 17],
+        "record": [455, 728, 63, 16], "clear": [629, 729, 46, 17], "demo": [783, 728, 43, 17],
     },
     "piano": [259, 394, 986, 545],
     "cells": {"cx": [401, 474, 548, 622, 696, 769, 843, 917, 993, 1068, 1142, 1217,
                      1292, 1367, 1447, 1525], "cy": 602, "hw": 32, "hh": 28},
-    "status": [880, 728], "show_values": True,
+    "status": [880, 728], "status_right": 1325,   # the bottom bar's dark panel ends at x 1340
+    "show_values": True,
     "ink": "#241a0a", "needle": "#ffcf6b", "accent_fg": "#c0451f", "slide_fg": "#3f7fa0",
-    "val_fg": "#f0d9a0", "sel": "#ffcf6b",
+    "val_fg": "#f0d9a0", "sel": "#ffcf6b", "status_fg": "#d8c08a",
+    "font": "Georgia", "knob_hub": "#1a1206",
+    "combo_colors": ("#2a1c0e", "#5a4326", "#f0d9a0"),
+    "lamps": ((33, 325, 36), (1291, 96, 26), (1691, 212, 24)),
+    "lamp_color": (255, 190, 90),
+}
+
+# The bundled skins share the same native coordinate map and hit targets.
+PANEL_SIZE = (1817, 866)
+DEFAULT_SKIN = "steampunk"
+# Each palette supplies readable colours for the Tk overlays on its PNG.
+# label, screen ink, dial needle, accent marker, slide marker, field, button, lamp
+ART_SKINS = {
+    "cyberpunk": ("Cyberpunk", "#e4f9ff", "#5cf5ff", "#ff8cc5", "#81edff",
+                  "#102133", "#344969", (104, 229, 255)),
+    "hard_cyberpunk": ("Hard Cyberpunk", "#f3efe4", "#ff9b43", "#ffac73", "#f3db78",
+                       "#191e26", "#474443", (255, 150, 65)),
+    "cyber_reggae": ("Cyber-Reggae", "#e3fbda", "#6ffa8b", "#ffc361", "#a1ffcc",
+                     "#0a281f", "#355a37", (138, 255, 112)),
+    "goa_trance": ("Goa Trance", "#f5eaff", "#6ef5e6", "#ffa4e0", "#9dfff5",
+                   "#241637", "#5a386e", (144, 101, 255)),
+    "trance_dub": ("Trance Dub", "#e2f7ff", "#65dfff", "#ffc1ff", "#a3dcff",
+                   "#121b39", "#314d76", (100, 189, 255)),
+    "dub": ("Dub", "#fff1d3", "#ffc16a", "#ffab83", "#d4e7ad",
+            "#241d15", "#584631", (255, 171, 72)),
+    "reggae": ("Reggae", "#ffefc5", "#ffd24d", "#ffb2a1", "#a9ffae",
+               "#182c1d", "#554831", (255, 185, 73)),
+    "steampunk_ii": ("Steampunk II", "#eefaf0", "#efc66f", "#ffb395", "#99e9d1",
+                     "#112722", "#475a43", (255, 187, 82)),
+    "classic": ("TB-303 Classic", "#182128", "#ff654f", "#a72221", "#175774",
+                "#ecede8", "#abb1b0", (255, 96, 66)),
+    "acid_rave": ("Acid Rave", "#f3f4de", "#d5fb43", "#efa9ff", "#aaffaf",
+                  "#171c1b", "#43423c", (208, 248, 70)),
+}
+
+
+def _art_skin_style(key, ink, needle, accent, slide, field, button, lamp):
+    classic = key == "classic"
+    return {
+        "ink": ink, "needle": needle, "accent_fg": accent, "slide_fg": slide,
+        "val_fg": ink, "sel": "#b62d29" if classic else needle,
+        "status_fg": "#e0e8e9" if classic else ink,
+        "font": "DejaVu Sans" if classic else "DejaVu Sans Mono",
+        "knob_hub": "#25282a" if classic else field,
+        "combo_colors": (field, button, ink),
+        "lamps": ((1441, 108, 13), (1495, 108, 13), (1549, 108, 13)),
+        "lamp_color": lamp,
+    }
+
+
+SKINS = {
+    DEFAULT_SKIN: ("Steampunk", "tb303_skin.png", {}),
+    **{key: (label, f"tb303_skin_{key}.png", _art_skin_style(key, *palette))
+       for key, (label, *palette) in ART_SKINS.items()},
 }
 
 # Projects and the samples they use live in two folders next to this script.
@@ -97,26 +154,34 @@ SKIN_MAP = {
 #            Python_Scripts/   this script and the other modules
 #            Projects/         .tb303 projects
 #            Instruments/      samples used by the projects
-#            docs/             images: the skin, the icon, screenshots
+#            doc/skin/         Art Controls skins
 # The script also still runs from the old flat layout (everything in one folder).
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE) if os.path.basename(HERE) == "Python_Scripts" else HERE
 PROJECTS_DIR = os.path.join(ROOT, "Projects")
 INSTRUMENTS_DIR = os.path.join(ROOT, "Instruments")
-DOCS_DIR = os.path.join(ROOT, "docs")
-ICON_PATH = os.path.join(DOCS_DIR, "tb303_icon.png")
+DOC_DIR = os.path.join(ROOT, "doc")
+ART_SKINS_DIR = os.path.join(DOC_DIR, "skin")
 # Tk turns the class name into WM_CLASS ("tb303-studio", "Tb303-studio"); GNOME
 # matches the first part to the launcher (StartupWMClass, tb303-studio.desktop).
 # Keep it lowercase: Tk would otherwise rewrite it ("TB303Studio" -> "tB303Studio").
 WM_CLASS = "tb303-studio"
 
 
+def _find_asset(filename):
+    # The original panel and icon can be in the current or legacy layout.
+    for folder in (ART_SKINS_DIR, DOC_DIR, os.path.join(ROOT, "docs"), HERE, ROOT):
+        path = os.path.join(folder, filename)
+        if os.path.isfile(path):
+            return path
+    return os.path.join(ART_SKINS_DIR, filename)
+
+
 def _find_skin():
-    for p in (os.path.join(DOCS_DIR, "tb303_skin.png"), os.path.join(HERE, "tb303_skin.png"),
-              os.path.join(ROOT, "tb303_skin.png")):
-        if os.path.exists(p):
-            return p
-    return os.path.join(DOCS_DIR, "tb303_skin.png")
+    return _find_asset(SKINS[DEFAULT_SKIN][1])
+
+
+ICON_PATH = _find_asset("tb303_icon.png")
 
 
 def _migrate_lowercase_folders():
@@ -146,6 +211,22 @@ N_BANKS = 8
 PROJECT_VERSION = 3
 
 
+def fit_text(text, font, width):
+    """text cut with an ellipsis so that it is at most width pixels wide in font."""
+    if width <= 0:
+        return ""
+    if font.measure(text) <= width:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if font.measure(text[:mid].rstrip() + "\u2026") <= width:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo].rstrip() + "\u2026" if lo else ""
+
+
 class SkinStudio:
     SR = 44100
 
@@ -154,20 +235,25 @@ class SkinStudio:
             raise SystemExit("Pillow requis : pip install pillow")
         self.root = root
         self.tb = TB303(self.SR)
-        self.M = SKIN_MAP
-        self.img = Image.open(image_path).convert("RGB")
+        self._skins = {
+            key: (label, _find_skin() if key == DEFAULT_SKIN else os.path.join(ART_SKINS_DIR, filename), style)
+            for key, (label, filename, style) in SKINS.items()
+        }
+        requested_path = os.path.realpath(image_path)
+        self._skin = next((key for key, (_, path, _) in self._skins.items()
+                           if os.path.realpath(path) == requested_path), "custom")
+        if self._skin == "custom":
+            self._skins["custom"] = ("Custom: " + os.path.basename(image_path), image_path, {})
+        self.skin_v = tk.StringVar(root, value=self._skin)
+        self.M = {**SKIN_MAP, **self._skins[self._skin][2]}
+        self.img, self.scale, self._disp_rgb, self.bg = self._prepare_panel(image_path, self._skin)
         self.IW, self.IH = self.img.size
-        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        self.scale = min(1.0, (sw - 30) / self.IW, (sh - 90) / self.IH)
-        disp = (self.img.resize((int(self.IW * self.scale), int(self.IH * self.scale)),
-                                Image.LANCZOS) if self.scale < 1 else self.img)
-        self._disp_rgb = disp.convert("RGB")
-        self.bg = ImageTk.PhotoImage(disp)
-        root.title("TB-303 Studio — " + os.path.basename(image_path))
+        self._update_window_title()
         root.resizable(False, False)
-        self.cv = tk.Canvas(root, width=disp.width, height=disp.height, highlightthickness=0)
+        self.cv = tk.Canvas(root, width=self._disp_rgb.width, height=self._disp_rgb.height,
+                            highlightthickness=0)
         self.cv.pack()
-        self.cv.create_image(0, 0, anchor="nw", image=self.bg)
+        self._background_item = self.cv.create_image(0, 0, anchor="nw", image=self.bg)
 
         self.kv = {k: KNOB_SPEC[k][2] for k in KNOB_SPEC}
         self.waveform = "square"
@@ -184,16 +270,24 @@ class SkinStudio:
         self.sel = 0
         self.playing = False
         self._drag = None
-        # steampunk lamps act as VU meters: the glass itself brightens with the music
-        # (dark on silence), the effect confined to the bulb (no halo). Native coords.
-        self._lamps = [(33, 325, 36), (1291, 96, 26), (1691, 212, 24)]
+        # The lamps in each skin act as VU indicators.
         self.level = 0.0
         self._vu_on = False
+        self._vu_job = None
+        self._audition_until = 0.0
+        self._audition_note = None
+        self._lighting = None
         self._lamp_items = []
         self._lamp_frames = []
         self._loop_audio = None
         self._loop_t0 = 0.0
         self._loop_dur = 1.0
+        self._take = None
+        self._record_engine = None
+        self._mixer_tap = None
+        self._mixer_error = None
+        self._mixer_take = None
+        self._mixer_level = 0.0
         self._build_lamp_frames()
         self.audio_ok = self._init_audio()
         self._presample_colors()
@@ -210,6 +304,7 @@ class SkinStudio:
         filem.add_command(label="Open project\u2026   (Ctrl+O)", command=self._load_project)
         filem.add_command(label="Save project\u2026   (Ctrl+S)", command=self._save_project)
         filem.add_separator()
+        filem.add_command(label="Import pattern from audio\u2026", command=self._import_audio)
         filem.add_command(label="Export WAV\u2026", command=self._save)
         menubar.add_cascade(label="File", menu=filem)
         # Rebuilt each time it opens, so a file dropped into Instruments/ shows up.
@@ -220,10 +315,21 @@ class SkinStudio:
         self.samples = {}                        # id -> {"name", "path", "sampler"}
         self.irt = None
         self.irt_ok = instruments_rt._HAS_RT_INSTR
+        if self.irt_ok:                          # compile the sampler now, not on first use
+            threading.Thread(target=instruments_rt.warm_up, name="sampler warm-up",
+                             daemon=True).start()
+        self._one_stream = False                 # True when the device takes one stream only
         self._instr_rt = False
         self._instr_var = tk.StringVar(value=TB303_ID)
         self._rebuild_instr_menu()
         menubar.add_cascade(label="Instrument", menu=self.instr_menu)
+        skin_menu = tk.Menu(menubar, tearoff=0)
+        for key, (label, _, _) in self._skins.items():
+            skin_menu.add_radiobutton(label=label, variable=self.skin_v, value=key,
+                                      command=self._change_skin)
+        skin_menu.add_separator()
+        skin_menu.add_command(label="Active Skin Details…", command=self._show_skin_details)
+        menubar.add_cascade(label="Skin", menu=skin_menu)
         _migrate_lowercase_folders()
         for d in (PROJECTS_DIR, INSTRUMENTS_DIR):
             try:
@@ -242,6 +348,89 @@ class SkinStudio:
         root.bind("<Control-o>", lambda e: self._load_project())
         self._apply_preset("Classic Bass")
         self.refresh()
+
+    def _prepare_panel(self, path, skin):
+        with Image.open(path) as source:
+            image = source.convert("RGB")
+        if skin in ART_SKINS and image.size != PANEL_SIZE:
+            raise ValueError(f"Expected a {PANEL_SIZE[0]} × {PANEL_SIZE[1]} px panel.")
+        width, height = image.size
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        scale = min(1.0, (sw - 30) / width, (sh - 90) / height)
+        display = image.copy()
+        self._blank_record_plate(display, skin)
+        if scale < 1:
+            display = display.resize((int(width * scale), int(height * scale)), Image.LANCZOS)
+        return image, scale, display, ImageTk.PhotoImage(display, master=self.root)
+
+    @staticmethod
+    def _blank_record_plate(display, skin):
+        """Clear the old, baked-in text while keeping the button's frame."""
+        engraved = skin in (DEFAULT_SKIN, "steampunk_ii", "custom")
+        if engraved:
+            left, top, right, bottom = 397, 718, 514, 741
+        else:
+            left, top, right, bottom = 408, 720, 502, 736
+        # Fade into the adjacent material so the mounted button stays visible.
+        plate = np.asarray(display.crop((left, top - 1, right, bottom + 1)), dtype=np.float32)
+        face = plate[1:-1]
+        height, width = face.shape[:2]
+        if engraved:
+            vertical = np.arange(1, height + 1)[:, None, None] / (height + 1)
+            clean = plate[:1] * (1 - vertical) + plate[-1:] * vertical
+        else:
+            edges = np.concatenate((face[:, :4], face[:, -4:]), axis=1)
+            clean = np.median(edges, axis=1, keepdims=True)
+        horizontal = np.arange(width)
+        feather = np.minimum(horizontal, width - 1 - horizontal)[None, :, None].clip(0, 4) / 4
+        pixels = face * (1 - feather) + clean * feather
+        display.paste(Image.fromarray(pixels.astype(np.uint8)), (left, top))
+
+    def _change_skin(self):
+        key = self.skin_v.get()
+        if key == self._skin:
+            return
+        label, path, style = self._skins[key]
+        try:
+            image, scale, display, photo = self._prepare_panel(path, key)
+        except (OSError, ValueError, tk.TclError) as exc:
+            self.skin_v.set(self._skin)
+            messagebox.showerror("TB-303 Studio", f"Could not load {label}:\n{path}\n\n{exc}",
+                                 parent=self.root)
+            return
+
+        self._skin = key
+        self.M = {**SKIN_MAP, **style}
+        self.img, self.scale, self._disp_rgb, self.bg = image, scale, display, photo
+        self.IW, self.IH = image.size
+        self.cv.configure(width=display.width, height=display.height)
+        self.cv.itemconfigure(self._background_item, image=self.bg)
+        self._update_window_title()
+        self._presample_colors()
+        self._style_combos()
+        self._build_lamp_frames()
+        if self._vu_on:
+            self._set_lamps(round(self.level * (self.NLAMPFR - 1)))
+        if getattr(self, "midi", None) is not None:
+            self.midi._draw_badge()
+        self.refresh()
+
+    def _update_window_title(self):
+        label = self._skins[self._skin][0]
+        edition = " [Live Lights]" if self._skin in STYLES else ""
+        project = getattr(self, "_project_path", None)
+        title = f"TB-303 Studio — {label}{edition}"
+        if project:
+            title += " — " + os.path.basename(project)
+        self.root.title(title)
+
+    def _show_skin_details(self):
+        label, path, _ = self._skins[self._skin]
+        edition = " (Live Lights)" if self._skin in STYLES else ""
+        messagebox.showinfo("Active Skin", f"{label}{edition}\n\n"
+                            f"Panel image\n{os.path.realpath(path)}\n\n"
+                            f"Studio script\n{os.path.realpath(__file__)}",
+                            parent=self.root)
 
     def S(self, v):
         return v * self.scale
@@ -287,7 +476,8 @@ class SkinStudio:
             os.environ["PULSE_SERVER"] = "unix:/mnt/wslg/PulseServer"
         try:
             pygame.mixer.quit()
-            pygame.mixer.init(frequency=self.SR, size=-16, channels=2)
+            pygame.mixer.init(frequency=self.SR, size=-16, channels=2, allowedchanges=0)
+            self._install_mixer_tap()
             self.mode = "pygame"
             return True
         except Exception as e:
@@ -370,31 +560,40 @@ class SkinStudio:
         self.refresh()
 
     def _make_combos(self):
-        try:
-            st = ttk.Style()
-            st.theme_use("clam")
-            st.configure("Skin.TCombobox", fieldbackground="#2a1c0e", background="#5a4326",
-                         foreground="#f0d9a0", arrowcolor="#f0d9a0")
-            st.map("Skin.TCombobox", fieldbackground=[("readonly", "#2a1c0e")],
-                   foreground=[("readonly", "#f0d9a0")])
-        except Exception:
-            pass
+        self._combos = {}
         for name, var, vals in [("scale", self.scale_v, list(SCALE_MAP)),
                                 ("playmode", self.playmode_v, list(PLAYMODES)),
                                 ("preset", self.preset_v, list(PRESETS))]:
-            cx, cy, w = self.M["combos"][name]
             cb = ttk.Combobox(self.cv, textvariable=var, values=vals, state="readonly",
-                              style="Skin.TCombobox", width=max(6, int(self.S(w) / 8)),
-                              font=("Georgia", 9))
-            self.cv.create_window(self.S(cx), self.S(cy), window=cb)
+                              style="Skin.TCombobox")
+            self._combos[name] = (cb, self.cv.create_window(0, 0, window=cb))
             if name == "preset":
                 cb.bind("<<ComboboxSelected>>", lambda e: self._apply_preset(self.preset_v.get()))
             else:
                 cb.bind("<<ComboboxSelected>>", lambda e: self._changed())
+        self._style_combos()
+
+    def _style_combos(self):
+        field, button, foreground = self.M["combo_colors"]
+        try:
+            st = ttk.Style(self.root)
+            st.theme_use("clam")
+            st.configure("Skin.TCombobox", fieldbackground=field, background=button,
+                         foreground=foreground, arrowcolor=foreground)
+            st.map("Skin.TCombobox", fieldbackground=[("readonly", field)],
+                   foreground=[("readonly", foreground)])
+        except Exception:
+            pass
+        for name, (cb, item) in self._combos.items():
+            cx, cy, w = self.M["combos"][name]
+            cb.configure(width=max(6, int(self.S(w) / 8)), font=(self.M["font"], 9))
+            self.cv.coords(item, self.S(cx), self.S(cy))
+            self.cv.itemconfigure(item, width=round(self.S(w)) if self._skin in ART_SKINS else 0)
 
     def refresh(self):
         self.cv.delete("dyn")
         S = self.S
+        family = self.M["font"]
         for k, (cx, cy, r, vx, vy) in self.M["knobs"].items():
             vmin, vmax, _, fmt = KNOB_SPEC[k]
             frac = (self.kv[k] - vmin) / (vmax - vmin)
@@ -403,12 +602,12 @@ class SkinStudio:
                                 S(cy + (r - 6) * math.sin(ang)), fill=self.M["needle"],
                                 width=max(2, int(S(3))), capstyle="round", tags="dyn")
             self.cv.create_oval(S(cx) - 3, S(cy) - 3, S(cx) + 3, S(cy) + 3,
-                                fill="#1a1206", outline=self.M["needle"], tags="dyn")
+                                fill=self.M["knob_hub"], outline=self.M["needle"], tags="dyn")
             if self.M.get("show_values"):
                 self.cv.create_rectangle(S(vx) - S(22), S(vy) - S(9), S(vx) + S(22), S(vy) + S(9),
                                          fill=self.valbg[k], outline="", tags="dyn")
                 self.cv.create_text(S(vx), S(vy), text=fmt.format(self.kv[k]), fill=self.M["val_fg"],
-                                    font=("Georgia", max(7, int(S(11))), "bold"), tags="dyn")
+                                    font=(family, max(7, int(S(11))), "bold"), tags="dyn")
         for w, (x, y) in self.M["waveform"].items():
             if w == self.waveform:
                 self.cv.create_oval(S(x) - 7, S(y) - 7, S(x) + 7, S(y) + 7,
@@ -426,17 +625,46 @@ class SkinStudio:
             col = self.M["accent_fg"] if st["accent"] else (
                 self.M["slide_fg"] if st["slide"] else self.M["ink"])
             self.cv.create_text(S(cx), S(C["cy"]) - S(7), text=note, fill=col,
-                                font=("Georgia", max(8, int(S(13))), "bold"), tags="dyn")
+                                font=(family, max(8, int(S(13))), "bold"), tags="dyn")
             if sub:
                 self.cv.create_text(S(cx), S(C["cy"]) + S(11), text=sub, fill=col,
-                                    font=("Georgia", max(7, int(S(10))), "bold"), tags="dyn")
+                                    font=(family, max(7, int(S(10))), "bold"), tags="dyn")
             if i == self.sel:
                 self.cv.create_rectangle(S(cx) - S(C["hw"]), S(C["cy"]) - S(C["hh"]),
                                          S(cx) + S(C["hw"]), S(C["cy"]) + S(C["hh"]),
                                          outline=self.M["sel"], width=3, tags="dyn")
-        msg = ("\u25b6 lecture" if self.playing else (self.audio_err if not self.audio_ok else "Pret"))
-        self.cv.create_text(S(self.M["status"][0]), S(self.M["status"][1]), anchor="w",
-                            text=msg, fill="#d8c08a", font=("Georgia", max(8, int(S(11)))), tags="dyn")
+        take = self._take
+        label = "RECORD"
+        ink = "#f3dbab" if self._skin in (DEFAULT_SKIN, "steampunk_ii", "custom") else self.M["ink"]
+        msg = getattr(self, "_busy", None) or \
+            ("\u25b6 lecture" if self.playing else (self.audio_err if not self.audio_ok else "Pret"))
+        if take is not None:
+            if take.recording:
+                label, msg = "STOP REC", "\u25cf Recording"
+                ink = "#99142a" if self._skin == "classic" else "#ff9993"
+            else:
+                label, msg = "SAVE TAKE", "Take ready"
+        bx, by, _, _ = self.M["buttons"]["record"]
+        self.cv.create_text(S(bx), S(by), text=label, fill=ink,
+                            font=(family, -max(9, int(S(17))), "bold"), tags="dyn")
+        # The status line ends before the MIDI badge (midi_in draws it on the same bar)
+        # or before the parchment, cut with an ellipsis when it is too long.
+        x, y = S(self.M["status"][0]), S(self.M["status"][1])
+        right = S(self.M.get("status_right", 1325))
+        badge = self.cv.bbox("midi")
+        if badge and badge[0] > x:
+            right = min(right, badge[0] - S(16))
+        font = self._font(max(8, int(S(11))))
+        self.cv.create_text(x, y, anchor="w", text=fit_text(msg, font, right - x),
+                            fill=self.M["status_fg"], font=font, tags="dyn")
+
+    def _font(self, size):
+        """The status line's font at this size, kept so the text can be measured."""
+        fonts = self.__dict__.setdefault("_fonts", {})
+        key = (self.M["font"], size)
+        if key not in fonts:
+            fonts[key] = tkfont.Font(root=self.root, family=key[0], size=size)
+        return fonts[key]
 
     def _to_img(self, e):
         return e.x / self.scale, e.y / self.scale
@@ -522,7 +750,7 @@ class SkinStudio:
         {"run": self._toggle_run, "stop": self._stop,
          "accent": lambda: self._toggle_step("accent"), "slide": lambda: self._toggle_step("slide"),
          "oct_down": lambda: self._octave(-1), "oct_up": lambda: self._octave(1),
-         "rest": lambda: self._set_note(None), "save": self._save, "clear": self._clear,
+         "rest": lambda: self._set_note(None), "record": self._toggle_record, "clear": self._clear,
          "demo": lambda: (self._load_pattern(DEMO_PATTERN), setattr(self, "sel", 0), self._changed())}[name]()
 
     def _apply_preset(self, name):
@@ -611,6 +839,7 @@ class SkinStudio:
         if not self._is303():
             if self._instr_rt and self.irt is not None:
                 self.irt.preview(note)
+                self._flash_note(note)
             else:
                 self._preview_instr(note)
             return
@@ -618,6 +847,7 @@ class SkinStudio:
             return
         if self.mode == "rt" and self.rt is not None:
             self.rt.preview(note)               # real-time audition
+            self._flash_note(note)
             return
         try:
             p = self._params()
@@ -626,6 +856,7 @@ class SkinStudio:
             a = np.clip(a * self.kv["volume"] / 0.9, -1, 1)
             self._ps = pygame.sndarray.make_sound(np.ascontiguousarray((a * 0.9 * 32767).astype(np.int16)))
             self._ps.play()
+            self._flash_note(note, len(a) / self.SR)
         except Exception:
             pass
 
@@ -650,7 +881,7 @@ class SkinStudio:
             a = self._render(1)
             self._loop_audio = a[:, 0] if a.ndim == 2 else a
             self._loop_dur = max(1e-3, len(a) / self.SR)
-            self._loop_t0 = time.time()
+            self._loop_t0 = time.monotonic()
             d = np.ascontiguousarray((np.clip(a, -1, 1) * 32767).astype(np.int16))
             pygame.mixer.stop()
             self._snd = pygame.sndarray.make_sound(d)
@@ -671,7 +902,7 @@ class SkinStudio:
                 "So RUN has nothing to play (the button works, there is just no sound).\n\n"
                 "In the terminal where you launch the script:\n"
                 "    pip install pygame   (ou : pip install sounddevice numba)\n"
-                "then relaunch.  (SAVE WAV works without audio.)")
+                "then relaunch.  (File > Export WAV works without audio.)")
             return
         if self.mode == "rt":
             self.playing = not self.playing
@@ -707,6 +938,18 @@ class SkinStudio:
         self.refresh()
 
     def close(self):
+        self._discard_take()
+        self._vu_stop()
+        if self._mixer_tap is not None:
+            self._mixer_tap.close()
+            self._mixer_tap = None
+        job = getattr(self, "_import", None)
+        if job is not None:                      # an audio import still running: stop it
+            try:
+                job["proc"].kill()
+                os.remove(job["tmp"])
+            except Exception:
+                pass
         try:
             if self.rt is not None:
                 self.rt.stop()
@@ -728,8 +971,18 @@ class SkinStudio:
         sc = self.scale
         src = self._disp_rgb
         sw, sh = src.size
+        for item in self._lamp_items:
+            self.cv.delete(item)
         self._lamp_items, self._lamp_frames, self._lamp_pos = [], [], []
-        for (cx, cy, r) in self._lamps:
+        if self._lighting is not None:
+            self._lighting.close()
+            self._lighting = None
+        if self._skin in STYLES:
+            self._lighting = SkinLights(self.cv, self.scale, self.M, self._skin)
+            self._update_lighting()
+            return
+        lamp_color = np.array(self.M["lamp_color"])
+        for (cx, cy, r) in self.M["lamps"]:
             X, Y, R = cx * sc, cy * sc, max(6.0, r * sc)
             box = int(R * 1.7)
             x0, y0 = max(0, int(X - box)), max(0, int(Y - box))
@@ -746,7 +999,7 @@ class SkinStudio:
                     proc = region * (0.30 + (f / 0.5) * 0.70)
                 else:                                        # normal -> blazing (warm screen)
                     t = (f - 0.5) / 0.5
-                    warm = np.array([255, 190, 90]) * t
+                    warm = lamp_color * t
                     proc = (255 - (255 - region) * (255 - warm) / 255) * (1 + 0.25 * t)
                 comp = region * (1 - m) + np.clip(proc, 0, 255) * m
                 frames.append(ImageTk.PhotoImage(
@@ -769,33 +1022,69 @@ class SkinStudio:
             self._vu_on = True
             self._vu_tick()
 
+    def _flash_note(self, note, duration=.5):
+        self._audition_note = note
+        self._audition_until = time.monotonic() + duration
+        self._vu_start()
+
     def _vu_stop(self):
         self._vu_on = False
+        if self._vu_job is not None:
+            self.root.after_cancel(self._vu_job)
+            self._vu_job = None
+        self._audition_until = 0.0
+        self._audition_note = None
         self.level = 0.0
         self._set_lamps(self._rest_idx())
+        self._update_lighting()
+
+    def _active_engine(self):
+        if self._is303():
+            return self.rt if self.mode == "rt" else None
+        return self.irt if self._instr_rt else None
 
     def _vu_level(self):
-        # real-time engines have a meter; pygame path estimates from the looped buffer
-        if self._is303() and self.mode == "rt" and self.rt is not None:
-            return min(1.0, self.rt.get_level())
-        if (not self._is303()) and self._instr_rt and self.irt is not None:
-            return min(1.0, self.irt.get_level())
-        if self._loop_audio is not None and self._loop_dur > 0:
-            pos = (time.time() - self._loop_t0) % self._loop_dur
+        engine = self._active_engine()
+        if engine is not None:
+            return min(1.0, engine.get_level())
+        if self._mixer_tap is not None:
+            return self._mixer_level
+        if self.playing and self._loop_audio is not None and self._loop_dur > 0:
+            pos = (time.monotonic() - self._loop_t0) % self._loop_dur
             i = int(pos * self.SR)
             w = self._loop_audio[i:i + 1024]
             if len(w):
                 return float(min(1.0, np.sqrt(np.mean(w * w)) * 3.2))
         return 0.0
 
+    def _update_lighting(self):
+        if self._lighting is None:
+            return
+        now = time.monotonic()
+        note = self._audition_note if now < self._audition_until else None
+        step = None
+        if self.playing and self._vu_on:
+            engine = self._active_engine()
+            if engine is not None:
+                step = engine.get_step()
+            elif self._loop_audio is not None:
+                # The offline loop alternates long/short steps when shuffle is on.
+                position = (now - self._loop_t0) % self._loop_dur
+                slot = position / self._loop_dur * len(self.steps)
+                pair = int(slot // 2)
+                step = 2 * pair + int(slot - 2 * pair >= 1 + self.kv["shuffle"])
+        self._lighting.show(self.level, step, note)
+
     def _vu_tick(self):
-        if not self._vu_on or not self.playing:
+        self._vu_job = None
+        if not self.playing and time.monotonic() >= self._audition_until:
             self._vu_stop()
             return
         lv = self._vu_level()
         self.level = lv if lv > self.level else self.level * 0.78    # fast rise, slow fall
         self._set_lamps(int(round(self.level * (self.NLAMPFR - 1))))
-        self.root.after(40, self._vu_tick)
+        self._update_lighting()
+        self._vu_job = self.root.after(34, self._vu_tick)
 
     # ---------- instruments (non-303 voices) ----------
     def _is303(self):
@@ -900,38 +1189,75 @@ class SkinStudio:
                 os.environ.setdefault("SDL_AUDIODRIVER", "pulseaudio")
                 os.environ["PULSE_SERVER"] = "unix:/mnt/wslg/PulseServer"
             try:
-                pygame.mixer.init(frequency=self.SR, size=-16, channels=2)
+                pygame.mixer.init(frequency=self.SR, size=-16, channels=2, allowedchanges=0)
             except Exception:
                 return False
+            self._mixer_error = None
+        if self._mixer_tap is None and self._mixer_error is None:
+            self._install_mixer_tap()
         return True
+
+    def _install_mixer_tap(self):
+        try:
+            self._mixer_tap = MixerOutputTap(pygame.mixer, self.SR, self._mixer_audio)
+            self._mixer_error = None
+        except RuntimeError as error:
+            self._mixer_error = str(error)
+
+    def _mixer_audio(self, pcm):
+        samples = np.frombuffer(pcm, dtype=np.int16)
+        if samples.size:
+            self._mixer_level = max(int(samples.max()), -int(samples.min())) / 32768
+        take = self._mixer_take
+        if take is not None:
+            take.capture_pcm(pcm)
 
     # ---------- real-time instrument engine (sample + 303 filter, live knobs) ----------
     def _ensure_irt(self):
+        """Start the sampler's stream. The 303's stream stays open beside it when the
+        sound system allows it (PulseAudio, PipeWire): changing pattern then only
+        changes which engine plays, with no stream to close and reopen; closing one
+        while it played could hang the studio. A device that takes one stream at a
+        time gets them in turn."""
         if not self.irt_ok:
             return False
         try:
             if self.irt is None:
                 self.irt = instruments_rt.RealtimeSamplerEngine(sr=self.SR)
-            if self.mode == "rt" and self.rt is not None:   # free the device (one stream at a time)
+            if self.irt.stream is None:
+                if self._one_stream:
+                    self._close_rt_stream()
                 try:
-                    self.rt.stop()
+                    self.irt.start()
                 except Exception:
-                    pass
-            self.irt.start()
+                    if self._one_stream or not self._close_rt_stream():
+                        raise
+                    self._one_stream = True
+                    self.irt.start()
             return True
         except Exception:
             self.irt_ok = False
             return False
 
+    def _close_rt_stream(self):
+        """Free the device from the 303's stream; False when it had none open."""
+        if self.mode != "rt" or self.rt is None or self.rt.stream is None:
+            return False
+        try:
+            self.rt.stop()
+        except Exception:
+            pass
+        return True
+
     def _resume_303(self):
-        if self.irt is not None:
+        if self._one_stream and self.irt is not None:
             try:
                 self.irt.stop()
             except Exception:
                 pass
         if self.mode == "rt" and self.rt is not None:
             try:
-                self.rt.start()
+                self.rt.start()                  # nothing to do when its stream is open
             except Exception:
                 pass
 
@@ -973,6 +1299,11 @@ class SkinStudio:
         loaded sample). Each of the 8 patterns keeps its own."""
         if name != TB303_ID and name not in instruments.BUILTIN and name not in self.samples:
             name = TB303_ID                       # unknown id (e.g. sample removed)
+        take = self._take
+        switching_at = None
+        if take is not None and take.recording:
+            self._disconnect_take()
+            switching_at = time.monotonic()
         was = self.playing
         self._stop()
         self.instrument = name
@@ -985,6 +1316,13 @@ class SkinStudio:
             self._instr_rt = True
             self._irt_load_voice()
             self._irt_push_all()
+        if switching_at is not None:
+            take.add_silence(time.monotonic() - switching_at)
+            try:
+                self._connect_take()
+            except (OSError, RuntimeError) as error:
+                self._finish_take()
+                messagebox.showwarning("Recording stopped", str(error), parent=self.root)
         if was:
             self._toggle_run()
         self.refresh()
@@ -1029,7 +1367,7 @@ class SkinStudio:
             a = self._render_instr(1)
             self._loop_audio = a[:, 0] if a.ndim == 2 else a
             self._loop_dur = max(1e-3, len(a) / self.SR)
-            self._loop_t0 = time.time()
+            self._loop_t0 = time.monotonic()
             pygame.mixer.stop()
             self._snd = pygame.sndarray.make_sound(
                 np.ascontiguousarray((a * 32767).astype(np.int16)))
@@ -1064,6 +1402,7 @@ class SkinStudio:
             self._vu_start()
         elif pygame.mixer.get_init():
             pygame.mixer.stop()
+            self._vu_stop()
         self.refresh()
 
     def _preview_instr(self, note):
@@ -1078,6 +1417,7 @@ class SkinStudio:
             self._ps = pygame.sndarray.make_sound(
                 np.ascontiguousarray((np.column_stack([a, a]) * 32767).astype(np.int16)))
             self._ps.play()
+            self._flash_note(note, len(a) / self.SR)
         except Exception:
             pass
 
@@ -1142,6 +1482,99 @@ class SkinStudio:
                 instruments.write_audio(audio, path, sr=self.SR)
         except Exception as e:
             messagebox.showerror("Cannot export", str(e))
+
+    # ---------- Live WAV recording ----------
+
+    def _connect_take(self):
+        if self._is303() and not self.audio_ok:
+            raise RuntimeError(self.audio_err or "The audio output is unavailable.")
+        engine = self._active_engine()
+        if engine is not None:
+            if engine.stream is None or not engine.stream.active:
+                raise RuntimeError("The real-time audio output is unavailable.")
+            self._record_engine = engine
+            engine.output_tap = self._take.capture_float
+        elif self._ensure_pygame():
+            if self._mixer_tap is None:
+                raise RuntimeError(self._mixer_error or "This pygame output cannot be recorded.")
+            self._mixer_take = self._take
+        else:
+            raise RuntimeError("The pygame audio output is unavailable.")
+
+    def _disconnect_take(self):
+        if self._record_engine is not None:
+            self._record_engine.output_tap = None
+            self._record_engine = None
+        self._mixer_take = None
+
+    def _toggle_record(self):
+        if self._take is None:
+            try:
+                self._take = WaveTake(self.SR)
+                self._connect_take()
+            except (OSError, RuntimeError) as error:
+                self._discard_take()
+                messagebox.showerror("Cannot start recording", str(error), parent=self.root)
+            self.refresh()
+            return
+        if self._take.recording:
+            self._finish_take()
+        if self._take is not None:
+            self._save_take()
+
+    def _finish_take(self):
+        self._disconnect_take()
+        take = self._take
+        take.finish()
+        if take.error is not None:
+            messagebox.showwarning("Recording interrupted", str(take.error), parent=self.root)
+        if not take.frames:
+            self._discard_take()
+            if take.error is None:
+                messagebox.showinfo("Record", "No audio samples were received.", parent=self.root)
+        self.refresh()
+
+    def _save_take(self, *, closing=False):
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title="Save live recording", defaultextension=".wav",
+            initialfile=time.strftime("tb303-take-%Y%m%d-%H%M%S.wav"), filetypes=[("WAV", "*.wav")])
+        if not path:
+            if not closing and messagebox.askyesno(
+                    "Discard recording?", "Discard this take? Choose No to keep it for later.",
+                    parent=self.root):
+                self._discard_take()
+                self.refresh()
+            return False
+        if not path.lower().endswith(".wav"):
+            path += ".wav"
+            if os.path.exists(path) and not messagebox.askyesno(
+                    "Replace recording?", f"Replace {os.path.basename(path)}?", parent=self.root):
+                return False
+        try:
+            self._take.save(path)
+        except OSError as error:
+            messagebox.showerror("Cannot save recording", str(error), parent=self.root)
+            return False
+        self._discard_take()
+        self.refresh()
+        return True
+
+    def _discard_take(self):
+        self._disconnect_take()
+        if self._take is not None:
+            self._take.close()
+            self._take = None
+
+    def _confirm_close_recording(self):
+        if self._take is None:
+            return True
+        if self._take.recording:
+            self._finish_take()
+        if self._take is None:
+            return True
+        save = messagebox.askyesnocancel("Unsaved recording", "Save the recording before closing?",
+                                         parent=self.root)
+        return save is False or (save is True and self._save_take(closing=True))
 
     # ---------- .tb303 project: per-pattern save / load ----------
     #
@@ -1331,7 +1764,7 @@ class SkinStudio:
 
     def _show_project_name(self, path):
         self._project_path = path
-        self.root.title("TB-303 Studio — " + os.path.basename(path))
+        self._update_window_title()
 
     def _save_project(self):
         self._freeze_bank()
@@ -1392,11 +1825,241 @@ class SkinStudio:
         except Exception as e:
             messagebox.showerror("Cannot open", str(e))
 
+    # ---------- File > Import pattern from audio... ----------
+    IMPORT_SCRIPT = "audio_to_tb303.py"
+
+    def _import_audio(self):
+        """Turn a recorded bass line into a pattern (notes, accents, slides, sound).
+        audio_to_tb303.py does the work in its own process, so the studio stays
+        usable; its messages scroll in the status line."""
+        title = "Import pattern from audio"
+        if getattr(self, "_import", None) is not None:
+            messagebox.showinfo(title, "An import is already running.", parent=self.root)
+            return
+        script = os.path.join(HERE, self.IMPORT_SCRIPT)
+        if not os.path.isfile(script):
+            messagebox.showerror(title, f"{self.IMPORT_SCRIPT} is missing from\n{HERE}", parent=self.root)
+            return
+        path = filedialog.askopenfilename(
+            title="Importer un pattern depuis un fichier audio",
+            filetypes=[("Audio", " ".join("*" + e for e in self.AUDIO_EXT)),
+                       ("Tous les fichiers", "*.*")])
+        if not path:
+            return
+        self._freeze_bank()
+        rows = [self._summary(self.banks[i], self._instr_label(self.bank_instr[i]))
+                for i in range(N_BANKS)]
+        dlg = AudioImportDialog(self.root, os.path.basename(path), rows, self.cur_bank)
+        if dlg.result is None:
+            return
+        target, scale, start, bpm, drums = dlg.result
+        fd, tmp = tempfile.mkstemp(prefix="tb303_import_", suffix=".tb303")
+        os.close(fd)
+        cmd = [sys.executable, "-u", script, path, "-o", tmp, "--scale", scale]
+        if drums:
+            cmd.append("--mix")
+        if start is not None:
+            cmd += ["--start", f"{start:g}"]
+        if bpm is not None:
+            cmd += ["--bpm", f"{bpm:g}"]
+        try:
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, bufsize=1, cwd=HERE)
+        except OSError as e:
+            os.remove(tmp)
+            messagebox.showerror(title, f"Cannot start the analysis:\n{e}", parent=self.root)
+            return
+        lines = queue.Queue()
+
+        def read_output():
+            for line in proc.stdout:
+                lines.put(line.rstrip("\n"))
+        threading.Thread(target=read_output, daemon=True).start()
+        self._import = {"proc": proc, "queue": lines, "tmp": tmp, "path": path,
+                        "target": target, "lines": [], "t0": time.time(), "shown": None}
+        self._poll_import()
+
+    def _poll_import(self):
+        job = self._import
+        while True:
+            try:
+                line = job["queue"].get_nowait()
+            except queue.Empty:
+                break
+            if line.strip():
+                job["lines"].append(line.strip())
+        done = job["proc"].poll() is not None
+        if not done:
+            last = job["lines"][-1] if job["lines"] else "starting"
+            # time first: the status line is cut to fit the bar
+            text = (f"Import \u2192 pattern {job['target'] + 1} \u00b7 "
+                    f"{time.time() - job['t0']:.0f} s \u00b7 {last}")
+            if text != job["shown"]:
+                job["shown"] = self._busy = text
+                self.refresh()
+            self.root.after(250, self._poll_import)
+            return
+        job["proc"].stdout.close()
+        time.sleep(0.05)                            # let the reader hand over the last lines
+        while not job["queue"].empty():
+            line = job["queue"].get_nowait().strip()
+            if line:
+                job["lines"].append(line)
+        self._import, self._busy = None, None
+        self.refresh()
+        self._finish_import(job)
+
+    def _finish_import(self, job):
+        title = "Import pattern from audio"
+        name, target, lines = os.path.basename(job["path"]), job["target"], job["lines"]
+        try:
+            if job["proc"].returncode == 0 and os.path.getsize(job["tmp"]) > 0:
+                P = self._read_project(job["tmp"])
+                self._import_patterns(P, [(0, target)], job["path"])
+                if target != self.cur_bank:
+                    self._switch_bank(target)
+                found = next((l for l in lines if " BPM | " in l), "")
+                notes = next((l for l in lines if l.startswith("Pattern: ")), "")[len("Pattern: "):]
+                check = next((l for l in lines if l.startswith("Check the notes")), "")
+                drums = any(l.startswith("Drums found") for l in lines)
+                messagebox.showinfo(
+                    title, f"Pattern {target + 1} now plays {name}.\n\n{notes}\n{found}"
+                    + ("\n\nDrums were heard: they were softened before the line was read."
+                       if drums else "")
+                    + (f"\n\n{check}: the analysis was unsure of them." if check else "")
+                    + "\n\nSave the project to keep it.", parent=self.root)
+            else:
+                why = next((l for l in reversed(lines) if l.startswith("Error:")),
+                           "\n".join(lines[-6:]) or "the analysis stopped without a message")
+                why = (why.replace("with --bpm", "in the Tempo field of the import window")
+                          .replace("with --start", "in the Loop starts at field")
+                          .replace("or --mix if drums play along",
+                                   "or tick “Drums play along” in the import window"))
+                messagebox.showerror(title, f"{name}\n\n{why}", parent=self.root)
+        except Exception as e:
+            messagebox.showerror(title, f"{name}\n\nThe result could not be read: {e}", parent=self.root)
+        finally:
+            try:
+                os.remove(job["tmp"])
+            except OSError:
+                pass
+
     def _clear(self):
         for s in self.steps:
             s.update(note=None, accent=False, slide=False)
         self.sel = 0
         self._changed()
+
+
+class AudioImportDialog(tk.Toplevel):
+    """Where an imported pattern goes, plus the hints the analysis may need.
+
+    After it closes, .result is None if cancelled, otherwise (target pattern
+    0-based, scale, loop start in s or None, tempo or None, drums play along)."""
+
+    HINT = ("Works best on an isolated bass line (a single voice) holding at least\n"
+            "one full 16-step loop. The analysis takes about a minute; the studio\n"
+            "stays usable meanwhile.")
+
+    def __init__(self, master, name, rows, current):
+        super().__init__(master)
+        self.rows, self.result = rows, None
+        self.title("Import pattern from audio")
+        self.resizable(False, False)
+        self.transient(master)
+
+        body = ttk.Frame(self, padding=14)
+        body.grid(sticky="nsew")
+        ttk.Label(body, text=name, font=("TkDefaultFont", 10, "bold")).grid(
+            row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(body, text=self.HINT, justify="left", foreground="#555").grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(4, 12))
+
+        ttk.Label(body, text="Into pattern").grid(row=2, column=0, sticky="w", pady=3)
+        self.choices = [f"{i + 1}   {rows[i]}" for i in range(N_BANKS)]
+        empty = [i for i in range(N_BANKS) if rows[i].endswith("empty")]
+        first = current if current in empty else (empty[0] if empty else current)
+        self.target = tk.StringVar(value=self.choices[first])     # never overwrite by default
+        cb = ttk.Combobox(body, textvariable=self.target, values=self.choices,
+                          state="readonly", width=34)
+        cb.grid(row=2, column=1, columnspan=2, sticky="w", padx=(10, 0))
+        cb.bind("<<ComboboxSelected>>", lambda e: self._update())
+        self.mark = ttk.Label(body, text="")
+        self.mark.grid(row=3, column=1, columnspan=2, sticky="w", padx=(10, 0))
+
+        ttk.Label(body, text="Scale").grid(row=4, column=0, sticky="w", pady=3)
+        self.scale = tk.StringVar(value="1/16")
+        ttk.Combobox(body, textvariable=self.scale, values=list(SCALE_MAP), state="readonly",
+                     width=6).grid(row=4, column=1, sticky="w", padx=(10, 0))
+        ttk.Label(body, text="the pattern's SCALE (1/16 suits most lines)", foreground="#555").grid(
+            row=4, column=2, sticky="w", padx=(8, 0))
+
+        self.start, self.bpm = tk.StringVar(), tk.StringVar()
+        for r, (label, var, unit) in enumerate((("Loop starts at", self.start, "s"),
+                                                ("Tempo", self.bpm, "BPM")), start=5):
+            ttk.Label(body, text=label).grid(row=r, column=0, sticky="w", pady=3)
+            ttk.Entry(body, textvariable=var, width=8).grid(row=r, column=1, sticky="w", padx=(10, 0))
+            ttk.Label(body, text=f"{unit}   (empty = found automatically)", foreground="#555").grid(
+                row=r, column=2, sticky="w", padx=(8, 0))
+
+        self.drums = tk.BooleanVar(value=False)
+        ttk.Checkbutton(body, text="Drums play along", variable=self.drums).grid(
+            row=7, column=0, columnspan=2, sticky="w", pady=(6, 3))
+        ttk.Label(body, text="softened first (automatic when hi-hats are heard)", foreground="#555").grid(
+            row=7, column=2, sticky="w", padx=(8, 0), pady=(6, 3))
+
+        self.msg = ttk.Label(body, text="", foreground="#b03a1a")
+        self.msg.grid(row=8, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        foot = ttk.Frame(body)
+        foot.grid(row=9, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        ttk.Button(foot, text="Cancel", command=self.destroy).pack(side="right")
+        self.ok = ttk.Button(foot, text="Import", command=self._accept)
+        self.ok.pack(side="right", padx=(0, 8))
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Return>", lambda e: self._accept())
+        self._update()
+        self.update_idletasks()
+        try:                                     # centre over the studio window
+            x = master.winfo_rootx() + (master.winfo_width() - self.winfo_width()) // 2
+            y = master.winfo_rooty() + (master.winfo_height() - self.winfo_height()) // 3
+            self.geometry(f"+{max(0, x)}+{max(0, y)}")
+        except Exception:
+            pass
+        self.grab_set()
+        self.ok.focus_set()
+        self.wait_window()
+
+    def _index(self):
+        return self.choices.index(self.target.get())
+
+    def _update(self):
+        empty = self.rows[self._index()].endswith("empty")
+        self.mark.configure(text="empty pattern" if empty else "replaces this pattern",
+                            foreground="#3c7a3c" if empty else "#b8730a")
+
+    @staticmethod
+    def _number(text, low, high, what):
+        text = text.strip().replace(",", ".")
+        if not text:
+            return None
+        try:
+            v = float(text)
+        except ValueError:
+            raise ValueError(f"{what}: “{text}” is not a number.")
+        if not low <= v <= high:
+            raise ValueError(f"{what} must be between {low:g} and {high:g}.")
+        return v
+
+    def _accept(self):
+        try:
+            start = self._number(self.start.get(), 0, 3600, "Loop start")
+            bpm = self._number(self.bpm.get(), 60, 200, "Tempo")
+        except ValueError as e:
+            self.msg.configure(text=str(e))
+            return
+        self.result = (self._index(), self.scale.get(), start, bpm, self.drums.get())
+        self.destroy()
 
 
 class PatternDialog(tk.Toplevel):
@@ -1557,6 +2220,44 @@ def _tools_next_to_python_on_path():
         os.environ["PATH"] = bindir + (os.pathsep + path if path else "")
 
 
+def _report_stalls(root, after=8.0):
+    """A freeze leaves no error message. When the window has not answered for `after`
+    seconds, print where each thread is (in the terminal, or in tb303_studio.log when
+    started from the icon): it shows what the studio waits for. kill -USR1 <pid>
+    prints the same at any time."""
+    import faulthandler
+    import signal
+    beat = [time.monotonic()]
+
+    def tick():
+        beat[0] = time.monotonic()
+        root.after(250, tick)
+
+    def watch():
+        told = False
+        while True:
+            time.sleep(1)
+            silent = time.monotonic() - beat[0]
+            if silent > after and not told:
+                told = True
+                try:
+                    print(f"\nTB-303 Studio has not answered for {silent:.0f} s. "
+                          "Where each thread is:", file=sys.stderr, flush=True)
+                    faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+                except (AttributeError, OSError, ValueError):
+                    pass
+            elif silent < 1:
+                told = False
+
+    tick()
+    threading.Thread(target=watch, name="stall report", daemon=True).start()
+    if hasattr(signal, "SIGUSR1"):
+        try:
+            faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True)
+        except (AttributeError, OSError, RuntimeError, ValueError):
+            pass
+
+
 def main():
     _log_to_file_without_terminal()
     _tools_next_to_python_on_path()
@@ -1596,12 +2297,15 @@ def main():
             print(f"MIDI off ({e}) — mouse only")
 
     def _on_close():
+        if not app._confirm_close_recording():
+            return
         if app.midi is not None:
             app.midi.close()
         app.close()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", _on_close)
+    _report_stalls(root)
     root.mainloop()
 
 
