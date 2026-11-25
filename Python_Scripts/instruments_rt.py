@@ -129,7 +129,9 @@ def synth_block(out, frames, st, pr, pat_f, pat_a, pat_s, nsteps, sr, sample, sl
             else:
                 step = 0; sis = 0.0; init = 1.0
             f = pat_f[step]
-            if f <= 0.0:
+            if f == -2.:
+                pass
+            elif f <= 0.0:
                 gate = 0.0
             else:
                 tgt = f * tun
@@ -142,10 +144,11 @@ def synth_block(out, frames, st, pr, pat_f, pat_a, pat_s, nsteps, sr, sample, sl
                     pos = 0.0                  # re-trigger the sample
                 gate = 1.0
                 acc = pat_a[step]
-            prevsl = pat_s[step]
+            if f != -2.:
+                prevsl = pat_s[step] if f > 0. else 0.
 
         freq += (glide_t - freq) * glide
-        gate_samps = sd if prevsl > 0.5 else gate_len * sd
+        gate_samps = sd if prevsl > 0.5 or pat_f[step+1 if step+1 < len(pat_f) else 0] == -2. else gate_len * sd
         g_on = 1.0 if (gate > 0.5 and sis < gate_samps) else 0.0
 
         ip = int(pos)
@@ -193,7 +196,7 @@ class RealtimeSamplerEngine:
         self.blocksize = blocksize
         self.params = np.zeros(NPARAMS, dtype=np.float64)
         self.state = np.zeros(NSTATE, dtype=np.float64)
-        self.pat_f = np.full(64, -1.0)
+        self.pat_f = np.full(65, -1.0)
         self.pat_a = np.zeros(64)
         self.pat_s = np.zeros(64)
         self.nsteps = 16
@@ -230,17 +233,21 @@ class RealtimeSamplerEngine:
             self.base = float(base_freq) if base_freq and base_freq > 0 else 220.0
 
     def set_pattern(self, steps, tuning=None):
+        from tb303 import parse_step as unpack
         with self._lock:
             self.nsteps = max(1, min(64, len(steps)))
-            for i in range(64):
-                if i < len(steps):
-                    s = steps[i]
-                    note, acc, sld = parse_step(s) if isinstance(s, str) else s
-                    self.pat_f[i] = note_to_freq(note, 440.0) if note else -1.0
-                    self.pat_a[i] = 1.0 if acc else 0.0
-                    self.pat_s[i] = 1.0 if sld else 0.0
-                else:
-                    self.pat_f[i] = -1.0; self.pat_a[i] = 0.0; self.pat_s[i] = 0.0
+            for i in range(self.nsteps):
+                item = steps[i] if i < len(steps) else "."
+                d = unpack(item) if isinstance(item,(dict,str)) else dict(zip(("note","accent","slide","tie"),item))
+                self.pat_f[i] = -2. if d.get("tie") else (note_to_freq(d["note"],440.) if d["note"] else -1.)
+                self.pat_a[i] = float(d["accent"])
+                self.pat_s[i] = float(d["slide"])
+            self.pat_f[self.nsteps] = self.pat_f[0]
+            self.state[S_STEP] = min(self.state[S_STEP], self.nsteps-1)
+
+    def process(self, out):
+        synth_block(out, len(out), self.state, self.params, self.pat_f, self.pat_a,
+                    self.pat_s, self.nsteps, float(self.sr), self.sample, self.sample.size, self.base)
 
     def set_playing(self, on):
         if on:
@@ -255,14 +262,11 @@ class RealtimeSamplerEngine:
             self.state[S_PREVN] = dur * self.sr
 
     def _callback(self, outdata, frames, time_info, status):
-        if not _ready.is_set():                  # still compiling (warm_up)
-            outdata.fill(0)
-            return
         buf = np.empty(frames, dtype=np.float64)
         with self._lock:
-            synth_block(buf, frames, self.state, self.params,
-                        self.pat_f, self.pat_a, self.pat_s, self.nsteps, float(self.sr),
-                        self.sample, self.sample.size, self.base)
+            song=getattr(self,"track_source",None)
+            if song is not None: song.fill(buf)
+            else: self.process(buf)
         np.clip(buf, -1.0, 1.0, out=buf)
         peak = float(np.abs(buf).max())
         self.level = peak if peak > self.level else self.level * 0.82
@@ -279,8 +283,7 @@ class RealtimeSamplerEngine:
         return int(self.state[S_STEP])
 
     def start(self):
-        if not _ready.is_set():
-            threading.Thread(target=warm_up, name="sampler warm-up", daemon=True).start()
+        warm_up()                                # compile here, never in the callback
         if self.stream is None:
             stream = sd.OutputStream(samplerate=self.sr, channels=2,
                                      blocksize=self.blocksize, dtype="float32",
@@ -301,21 +304,23 @@ class RealtimeSamplerEngine:
                 stream.close()
 
 
-# Numba compiles synth_block on its first call. Done inside the audio callback, that
-# took seconds with the engine lock held: the studio, waiting for that lock to load
-# the sample, froze.
+# Numba compiles a kernel on its first call. Done inside the audio callback, that took
+# seconds with the engine lock held: the studio, waiting for that lock to load the
+# sample, froze. start() compiles first; the studio also does it at launch, in the
+# background, so that the first sample pattern does not wait.
 _ready = threading.Event()
 _warming = threading.Lock()
 
 
 def warm_up():
-    """Compile the DSP now, outside the audio thread (the callback stays silent until
-    then). Safe to call from any thread, more than once."""
+    """Compile the sampler, and the 303 voices it can host in Pattern Play, before any
+    callback needs them. Safe to call from any thread, more than once."""
+    import tb303_rt
+    tb303_rt.warm_up()
     with _warming:
         if not _ready.is_set():
             e = RealtimeSamplerEngine()
-            buf = np.zeros(e.blocksize)
-            synth_block(buf, len(buf), e.state, e.params, e.pat_f, e.pat_a, e.pat_s,
+            synth_block(np.empty(0), 0, e.state, e.params, e.pat_f, e.pat_a, e.pat_s,
                         e.nsteps, float(e.sr), e.sample, e.sample.size, e.base)
             _ready.set()
 

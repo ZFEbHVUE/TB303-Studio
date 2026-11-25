@@ -540,9 +540,9 @@
   },
   {
    "kind": "sample",
-   "name": "didgeridoo_gong_ancrage.flac",
-   "file": "didgeridoo_gong_ancrage.flac",
-   "source": "/home/stphnpro/TB303-Studio/Instruments/didgeridoo_gong_ancrage.flac",
+   "name": "didgeridoo_grounding_gong.flac",
+   "file": "didgeridoo_grounding_gong.flac",
+   "source": "Instruments/didgeridoo_grounding_gong.flac",
    "base_freq": 64.0988
   },
   {

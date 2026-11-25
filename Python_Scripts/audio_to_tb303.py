@@ -20,7 +20,9 @@ hi-hats, snares or claps are heard (--no-mix prevents it).
 
 The tempo, swing, notes, slides, accents and tuning are read from the audio; the
 sound knobs (cutoff, resonance, env mod, decay, accent, distortion, volume) are then
-fitted by letting the studio's real-time engine play the pattern and comparing.
+fitted by letting the studio's real-time engine play the pattern and comparing. The
+voice it plays is the Legacy one, or the Classic one with --profile classic (the studio
+passes the profile of the open project).
 """
 
 import argparse
@@ -204,7 +206,7 @@ def detect_grid(audio, subdiv, start=None, bpm=None, shuffle=None):
     mode = "free" if free else "fixed"
     origin = heard if free else start
     available = len(audio) / SR - origin
-    if available < 16 * 60 / (200 * subdiv) - .025:
+    if available < 16 * 60 / ((bpm or 200) * subdiv) - .025:
         raise ValueError("the audio is too short for 16 steps at this scale.")
     onsets, weights, lag_times, ac = track_rhythm(audio[round(origin * SR):])
     if len(weights):
@@ -465,11 +467,12 @@ def play(rt, grid, tuning, notes, slides, accents, values, waveform, frames, pha
     for key, val in zip(FIT_KEYS, values):
         params[rt.RealtimeEngine._PIDX[key]] = val
     for index, val in ((rt.P_WAVE, waveform == "square"), (rt.P_BPM, grid.bpm),
-                       (rt.P_TUNING, tuning), (rt.P_GATE, .55),
+                       (rt.P_TUNING, tuning), (rt.P_GATE, getattr(rt,"fit_gate",.55)),
                        (rt.P_SUBDIV, grid.subdiv), (rt.P_SWING, grid.shuffle),
                        (rt.P_PLAY, 1.)):
         params[index] = val
     frequency = np.where(notes >= 0, 440 * 2. ** ((notes - 69) / 12), -1.)
+    frequency = np.r_[frequency,frequency[0]]  # look ahead across the pattern boundary
     output = np.empty(frames)
     state = np.zeros(rt.NSTATE)
     state[rt.S_PHASE] = phase                   # where the oscillator starts in its cycle
@@ -620,7 +623,7 @@ def initial_accents(notes, active, slides, core, amp):
     return accents
 
 
-def load_engine(folder):
+def load_engine(folder, profile="legacy"):
     if folder is not None:
         folder = folder.resolve()
         if (folder / "Python_Scripts").is_dir():
@@ -637,7 +640,16 @@ def load_engine(folder):
     import tb303_rt
     if not tb303_rt._HAS_NUMBA:
         raise ValueError("the studio's engine cannot load Numba.")
-    return tb303_rt
+    return fitting_engine(tb303_rt,profile)
+
+
+def fitting_engine(rt,profile):
+    # Private view: do not overwrite the legacy function in the imported module.
+    if profile=="legacy": return rt
+    if not hasattr(rt,"classic_block"):
+        raise ValueError("This studio does not provide the Classic voice.")
+    from types import SimpleNamespace
+    return SimpleNamespace(**{**vars(rt),"synth_block":rt.classic_block,"fit_gate":.5})
 
 
 class SoundFit:
@@ -765,7 +777,7 @@ def note_name(note):
     return NAME[note % 12] + str(note // 12 - 1)
 
 
-def write_project(output, grid, scale, tuning, notes, slides, accents, values, waveform):
+def write_project(output, grid, scale, tuning, notes, slides, accents, values, waveform, profile="legacy"):
     knobs = dict(zip(FIT_KEYS, map(float, values)))
     knobs.update(bpm=grid.bpm, tuning=tuning, shuffle=grid.shuffle)
     settings = {
@@ -782,6 +794,7 @@ def write_project(output, grid, scale, tuning, notes, slides, accents, values, w
         "cur_bank": 0, "banks": [pattern, *empty], "bank_settings": [settings, *empty],
         "bank_instruments": [{"kind": "tb303", "name": "TB-303"}, *empty],
     }
+    if profile=="classic": result.update(version=4,voice_profile="classic")
     output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return pattern
 
@@ -794,15 +807,16 @@ def main():
                        help="soften the drums of a mixed extract first (done anyway when hi-hats or snares are heard)")
     drums.add_argument("--no-mix", action="store_true", help="never soften drums, even when some are heard")
     parser.add_argument("-o", "--output", type=Path, help="the .tb303 project to write")
+    parser.add_argument("--profile",choices=["classic","legacy"],default="legacy",help="voice to fit (GUI uses the open project’s profile)")
     parser.add_argument("--studio", type=Path, help="the TB303-Studio or Python_Scripts folder")
     parser.add_argument("--start", type=float, help="start of the loop in the audio, in seconds")
-    parser.add_argument("--bpm", type=float, help="tempo to use, 60 to 200")
-    parser.add_argument("--tuning", type=float, help="tuning to use, 400 to 480 Hz")
+    parser.add_argument("--bpm", type=float, help="tempo to use, 40 to 300 (automatic search: 60–200)")
+    parser.add_argument("--tuning", type=float, help="tuning to use, up to seven semitones around 440 Hz")
     parser.add_argument("--shuffle", type=float, help="shuffle to use, 0 to 0.66")
     parser.add_argument("--scale", choices=SCALES, default="1/16", help="step length (default 1/16)")
     parser.add_argument("--iterations", type=int, default=22, help="iterations per waveform (default 22)")
     args = parser.parse_args()
-    ranges = {"start": (0, float("inf")), "bpm": (60, 200), "tuning": (400, 480),
+    ranges = {"start": (0, float("inf")), "bpm": (40, 300), "tuning": (440*2**(-7/12), 440*2**(7/12)),
               "shuffle": (0, .66), "iterations": (1, float("inf"))}
     for name, (low, high) in ranges.items():
         value = getattr(args, name)
@@ -815,7 +829,7 @@ def main():
         parser.error("the input and the output must be different files")
 
     try:
-        rt = load_engine(args.studio)
+        rt = load_engine(args.studio,args.profile)
         print(f"Reading {args.audio.name}...", flush=True)
         audio, peak = read_audio(args.audio)
         print("Finding the tempo and the steps...", flush=True)
@@ -853,7 +867,7 @@ def main():
         accents = initial_accents(notes, active, slides, core, amp)
         fitting = SoundFit(audio, grid, positions, notes, slides, tuning, rt, peak)
         values, waveform, accents = fitting.optimize(accents, args.iterations)
-        pattern = write_project(output, grid, args.scale, tuning, notes, slides, accents, values, waveform)
+        pattern = write_project(output, grid, args.scale, tuning, notes, slides, accents, values, waveform,args.profile)
     except (OSError, ValueError, ImportError) as error:
         parser.exit(1, f"Error: {error}\n")
 

@@ -22,7 +22,8 @@ import tempfile
 import threading
 import wave
 import tkinter as tk
-from tkinter import ttk, messagebox, simpledialog
+from tkinter import ttk
+import studio_messages as messagebox
 
 AUDIO_EXTENSIONS = frozenset(('.wav', '.mp3', '.flac', '.ogg', '.opus', '.m4a',
                               '.aac', '.aif', '.aiff', '.wma', '.mp4'))
@@ -102,7 +103,7 @@ class FileEntry:
 
     @property
     def kind(self):
-        return 'Dossier' if self.is_dir else (Path(self.name).suffix.lstrip('.').upper() or 'Fichier')
+        return 'Folder' if self.is_dir else (Path(self.name).suffix.lstrip('.').upper() or 'File')
 
 
 def _scan_directory(path, token, stopped, results):
@@ -127,13 +128,13 @@ def _scan_directory(path, token, stopped, results):
 
 def _filetypes(value):
     result = []
-    for label, patterns in value or [('Tous les fichiers', '*')]:
+    for label, patterns in value or [('All files', '*')]:
         if isinstance(patterns, str):
             patterns = patterns.split()
         patterns = tuple('*' if str(p) == '*.*' else str(p) for p in patterns)
         if patterns:
             result.append((str(label), patterns))
-    return result or [('Tous les fichiers', ('*',))]
+    return result or [('All files', ('*',))]
 
 
 def _visible_entries(entries, patterns, search='', hidden=False, column='name', reverse=False):
@@ -152,10 +153,10 @@ def _visible_entries(entries, patterns, search='', hidden=False, column='name', 
 
 def _size_label(size):
     if size < 1024:
-        return f'{size} o'
-    for unit in ('Kio', 'Mio', 'Gio', 'Tio'):
+        return f'{size} B'
+    for unit in ('KiB', 'MiB', 'GiB', 'TiB'):
         size /= 1024
-        if size < 1024 or unit == 'Tio':
+        if size < 1024 or unit == 'TiB':
             return f'{size:.1f} {unit}'
 
 
@@ -217,8 +218,8 @@ def _save_name(name, filters, index, defaultextension=None):
 
 def _retyped_name(name, filters, index):
     """The name after another type is picked in the list: an extension that is
-    one of the dialog's types becomes the new type's one ('flûte.wav' ->
-    'flûte.mp3'); a name without one, or 'all files', is left as it is."""
+    one of the dialog's types becomes the new type's one ('flute.wav' ->
+    'flute.mp3'); a name without one, or 'all files', is left as it is."""
     new = _filter_extension(filters[index][1]) if 0 <= index < len(filters) else None
     if not name or new is None:
         return name
@@ -231,7 +232,7 @@ def _retyped_name(name, filters, index):
 def _initial_filter(filters, chosen=None, initialfile=None, defaultextension=None):
     """Which type the list shows first: the one a typevariable names, else the
     type of the proposed file name, else the type of the caller's default
-    extension (the Meditation tab's Format list), else the first."""
+    extension, else the first type."""
     labels = [label for label, _patterns in filters]
     if chosen in labels:
         return labels.index(chosen)
@@ -301,7 +302,7 @@ class PreviewPlayer:
         elif Path(path).suffix.lower() == '.wav' and shutil.which('aplay'):
             command = [shutil.which('aplay'), '-q', str(path)]
         else:
-            raise OSError('Préécoute indisponible : ffplay est nécessaire pour ce format.')
+            raise OSError('Preview unavailable: this format requires ffplay.')
         error_file = tempfile.TemporaryFile()
         flags = {'creationflags': getattr(subprocess, 'CREATE_NO_WINDOW', 0)} if os.name == 'nt' else {}
         try:
@@ -349,6 +350,7 @@ class StudioFileDialog(tk.Toplevel):
     """One child Tk window; the parent is never withdrawn or lowered."""
     def __init__(self, parent, mode='open', **options):
         super().__init__(parent)
+        messagebox.use_english(self)
         self.owner = parent.winfo_toplevel()
         self.mode, self.options = mode, options
         self.result = () if mode == 'multiple' else ''
@@ -381,8 +383,8 @@ class StudioFileDialog(tk.Toplevel):
         self.filter_var = tk.StringVar(master=self, value=self._filter_labels[first])
         self.hidden_var = tk.BooleanVar(master=self, value=bool(self.preferences.get('hidden', False)))
         self.status_var = tk.StringVar(master=self)
-        self.details_var = tk.StringVar(master=self, value='Sélectionnez un fichier pour afficher ses informations.')
-        self.title(options.get('title') or {'save': 'Enregistrer sous', 'directory': 'Choisir un dossier'}.get(mode, 'Ouvrir un fichier'))
+        self.details_var = tk.StringVar(master=self, value='Select a file to view its details.')
+        self.title(options.get('title') or {'save': 'Save as', 'directory': 'Select folder'}.get(mode, 'Open file'))
         if self.owner.winfo_viewable():
             self.transient(self.owner)
         self.protocol('WM_DELETE_WINDOW', self.cancel)
@@ -423,24 +425,24 @@ class StudioFileDialog(tk.Toplevel):
         toolbar = ttk.Frame(self, padding=(10, 10, 10, 4))
         toolbar.grid(row=0, column=0, sticky='ew')
         toolbar.columnconfigure(3, weight=1)
-        self.back_button = ttk.Button(toolbar, text='Préc.', width=6, command=lambda: self._history_move(-1))
+        self.back_button = ttk.Button(toolbar, text='Back', width=6, command=lambda: self._history_move(-1))
         self.back_button.grid(row=0, column=0, padx=(0, 3))
-        self.forward_button = ttk.Button(toolbar, text='Suiv.', width=6, command=lambda: self._history_move(1))
+        self.forward_button = ttk.Button(toolbar, text='Forward', width=8, command=lambda: self._history_move(1))
         self.forward_button.grid(row=0, column=1, padx=3)
         ttk.Button(toolbar, text='Parent', width=6, command=self._up).grid(row=0, column=2, padx=(3, 6))
         self.address = ttk.Entry(toolbar, textvariable=self.path_var)
         self.address.grid(row=0, column=3, sticky='ew')
         self.address.bind('<Return>', self._address_enter)
-        ttk.Button(toolbar, text='Actualiser', command=lambda: self.navigate(self.current_dir, remember=False)).grid(row=0, column=4, padx=(6, 0))
+        ttk.Button(toolbar, text='Refresh', command=lambda: self.navigate(self.current_dir, remember=False)).grid(row=0, column=4, padx=(6, 0))
         tools = ttk.Frame(self, padding=(10, 2, 10, 6))
         tools.grid(row=1, column=0, sticky='ew')
         tools.columnconfigure(1, weight=1)
-        ttk.Label(tools, text='Rechercher :').grid(row=0, column=0, padx=(0, 6))
+        ttk.Label(tools, text='Search:').grid(row=0, column=0, padx=(0, 6))
         search = ttk.Entry(tools, textvariable=self.search_var)
         search.grid(row=0, column=1, sticky='ew')
         search.bind('<Return>', lambda event: 'break')
-        ttk.Checkbutton(tools, text='Fichiers cachés', variable=self.hidden_var, command=self._render).grid(row=0, column=2, padx=10)
-        ttk.Button(tools, text='Nouveau dossier', command=self._new_folder).grid(row=0, column=3)
+        ttk.Checkbutton(tools, text='Show hidden files', variable=self.hidden_var, command=self._render).grid(row=0, column=2, padx=10)
+        ttk.Button(tools, text='New folder', command=self._new_folder).grid(row=0, column=3)
         browser = ttk.Frame(self, padding=(10, 0))
         browser.grid(row=2, column=0, sticky='nsew')
         browser.columnconfigure(1, weight=1)
@@ -454,8 +456,8 @@ class StudioFileDialog(tk.Toplevel):
         listing.rowconfigure(0, weight=1)
         self.tree = ttk.Treeview(listing, columns=('kind', 'size', 'modified'),
                                  selectmode='extended' if self.mode == 'multiple' else 'browse')
-        for key, label, width, anchor in (('#0', 'Nom', 310, 'w'), ('kind', 'Type', 80, 'w'),
-                                          ('size', 'Taille', 100, 'e'), ('modified', 'Modifié le', 150, 'w')):
+        for key, label, width, anchor in (('#0', 'Name', 310, 'w'), ('kind', 'Type', 80, 'w'),
+                                          ('size', 'Size', 100, 'e'), ('modified', 'Modified', 150, 'w')):
             column = 'name' if key == '#0' else key
             self.tree.heading(key, text=label, anchor=anchor, command=lambda c=column: self._sort(c))
             self.tree.column(key, width=width, minwidth=65, anchor=anchor, stretch=(key == '#0'))
@@ -475,15 +477,15 @@ class StudioFileDialog(tk.Toplevel):
         details.grid(row=3, column=0, sticky='ew')
         details.columnconfigure(0, weight=1)
         ttk.Label(details, textvariable=self.details_var, wraplength=660).grid(row=0, column=0, sticky='w')
-        self.preview_button = ttk.Button(details, text='Écouter', command=self._preview, state='disabled')
+        self.preview_button = ttk.Button(details, text='Preview', command=self._preview, state='disabled')
         self.preview_button.grid(row=0, column=1, padx=(8, 0))
         bottom = ttk.Frame(self, padding=(10, 0, 10, 10))
         bottom.grid(row=4, column=0, sticky='ew')
         bottom.columnconfigure(1, weight=1)
-        ttk.Label(bottom, text='Dossier :' if self.mode == 'directory' else 'Nom :').grid(row=0, column=0, sticky='w', padx=(0, 6))
+        ttk.Label(bottom, text='Folder:' if self.mode == 'directory' else 'Name:').grid(row=0, column=0, sticky='w', padx=(0, 6))
         self.name_entry = ttk.Entry(bottom, textvariable=self.name_var)
         self.name_entry.grid(row=0, column=1, sticky='ew', pady=(0, 5))
-        ttk.Label(bottom, text='Type :').grid(row=1, column=0, sticky='w', padx=(0, 6))
+        ttk.Label(bottom, text='Type:').grid(row=1, column=0, sticky='w', padx=(0, 6))
         self.filter_box = ttk.Combobox(bottom, textvariable=self.filter_var, values=self._filter_labels, state='readonly')
         self.filter_box.grid(row=1, column=1, sticky='ew')
         self.filter_box.bind('<<ComboboxSelected>>', self._filter_changed)
@@ -491,16 +493,16 @@ class StudioFileDialog(tk.Toplevel):
             self.filter_box.configure(state='disabled')
         buttons = ttk.Frame(bottom)
         buttons.grid(row=0, column=2, rowspan=2, sticky='ns', padx=(10, 0))
-        self.accept_button = ttk.Button(buttons, text={'save': 'Enregistrer', 'directory': 'Choisir'}.get(self.mode, 'Ouvrir'), command=self.accept)
+        self.accept_button = ttk.Button(buttons, text={'save': 'Save', 'directory': 'Select'}.get(self.mode, 'Open'), command=self.accept)
         self.accept_button.pack(fill='x', pady=(0, 5))
-        ttk.Button(buttons, text='Annuler', command=self.cancel).pack(fill='x')
+        ttk.Button(buttons, text='Cancel', command=self.cancel).pack(fill='x')
         ttk.Label(bottom, textvariable=self.status_var, anchor='w').grid(row=2, column=0, columnspan=3, sticky='ew', pady=(8, 0))
 
     def _build_places(self):
         for child in self.places.winfo_children():
             child.destroy()
-        ttk.Label(self.places, text='Emplacements').pack(anchor='w', pady=(0, 6))
-        locations = [('Accueil', str(Path.home())), ('Racine', Path(self.current_dir).anchor or os.sep)]
+        ttk.Label(self.places, text='Places').pack(anchor='w', pady=(0, 6))
+        locations = [('Home', str(Path.home())), ('Root', Path(self.current_dir).anchor or os.sep)]
         locations += list(_SHORTCUTS())
         favorites = self.preferences.get('favorites', [])
         if isinstance(favorites, list):
@@ -528,7 +530,7 @@ class StudioFileDialog(tk.Toplevel):
                 self.navigate(destinations[selected[0]])
         tree.bind('<<TreeviewSelect>>', select)
         ttk.Separator(self.places).pack(fill='x', pady=8)
-        ttk.Button(self.places, text='Dossier favori', width=18, command=self._favorite).pack(fill='x')
+        ttk.Button(self.places, text='Add to favorites', width=18, command=self._favorite).pack(fill='x')
 
     def _position(self):
         self.update_idletasks()
@@ -559,7 +561,7 @@ class StudioFileDialog(tk.Toplevel):
             self.name_var.set('')
         self.accept_button.configure(state='disabled')
         self.path_var.set(path)
-        self.status_var.set('Chargement du dossier…')
+        self.status_var.set('Loading folder…')
         self._stop_preview()
         self._audio_token += 1
         threading.Thread(target=_scan_directory, args=(path, self._scan_token, self._scan_stop, self._results), daemon=True).start()
@@ -576,8 +578,8 @@ class StudioFileDialog(tk.Toplevel):
                 self.accept_button.configure(state='normal')
                 if error:
                     self.path_var.set(self.current_dir)
-                    self.status_var.set('Dossier inaccessible.')
-                    messagebox.showerror('Ouverture du dossier', error, parent=self)
+                    self.status_var.set('Cannot access this folder.')
+                    messagebox.showerror('Open folder', error, parent=self)
                     continue
                 self.current_dir, self._entries = path, entries
                 self.path_var.set(path)
@@ -596,15 +598,15 @@ class StudioFileDialog(tk.Toplevel):
                 if info:
                     minutes, seconds = divmod(round(info['duration'], 1), 60)
                     duration = f'{int(minutes)} min {seconds:04.1f} s'
-                    channels = {1: 'mono', 2: 'stéréo'}.get(info['channels'], f"{info['channels']} canaux")
-                    self.details_var.set(f"{Path(item[2]).name}\n{duration}  ·  {info['rate']:,} Hz  ·  {channels}".replace(',', ' '))
+                    channels = {1: 'mono', 2: 'stereo'}.get(info['channels'], f"{info['channels']} channels")
+                    self.details_var.set(f"{Path(item[2]).name}\n{duration}  ·  {info['rate']:,} Hz  ·  {channels}")
                 else:
-                    self.details_var.set(f'{Path(item[2]).name}\nInformations audio indisponibles.')
+                    self.details_var.set(f'{Path(item[2]).name}\nAudio details unavailable.')
         code = self.player.poll()
         if code is not None:
-            self.preview_button.configure(text='Écouter')
+            self.preview_button.configure(text='Preview')
             if code:
-                self.status_var.set('Lecture audio impossible pour ce fichier ou ce périphérique.')
+                self.status_var.set('Cannot play audio from this file on the selected device.')
         self._later(40, self._drain)
 
     def _render(self):
@@ -623,7 +625,7 @@ class StudioFileDialog(tk.Toplevel):
         if self.mode == 'directory':
             entries = [e for e in entries if e.is_dir]
         if not self._loading:
-            self.status_var.set(f'{len(entries)} élément(s)')
+            self.status_var.set(f"{len(entries)} {'item' if len(entries) == 1 else 'items'}")
         def insert(offset=0):
             if token != self._render_token:
                 return
@@ -645,7 +647,7 @@ class StudioFileDialog(tk.Toplevel):
     def _sort(self, column):
         self._sort_reverse = not self._sort_reverse if column == self._sort_column else False
         self._sort_column = column
-        for key, label in (('#0', 'Nom'), ('kind', 'Type'), ('size', 'Taille'), ('modified', 'Modifié le')):
+        for key, label in (('#0', 'Name'), ('kind', 'Type'), ('size', 'Size'), ('modified', 'Modified')):
             active = ('name' if key == '#0' else key) == column
             self.tree.heading(key, text=label + ((' ▼' if self._sort_reverse else ' ▲') if active else ''))
         self._render()
@@ -675,15 +677,15 @@ class StudioFileDialog(tk.Toplevel):
         self.preview_button.configure(state='disabled')
         if len(files) == 1 and Path(files[0].name).suffix.lower() in AUDIO_EXTENSIONS:
             path, token = files[0].path, self._audio_token
-            self.details_var.set(f'{files[0].name}\nLecture des informations audio…')
+            self.details_var.set(f'{files[0].name}\nReading audio details…')
             self.preview_button.configure(state='normal')
             self._later(180, lambda: self._start_probe(path, token))
         elif files:
-            self.details_var.set(f'{len(files)} fichier(s) sélectionné(s)  ·  {_size_label(sum(e.size for e in files))}')
+            self.details_var.set(f'{len(files)} files selected  ·  {_size_label(sum(e.size for e in files))}')
         elif entries:
             self.details_var.set(entries[0].path)
         else:
-            self.details_var.set('Sélectionnez un fichier pour afficher ses informations.')
+            self.details_var.set('Select a file to view its details.')
 
     def _start_probe(self, path, token):
         if token != self._audio_token:
@@ -696,7 +698,7 @@ class StudioFileDialog(tk.Toplevel):
 
     def _stop_preview(self):
         self.player.stop()
-        self.preview_button.configure(text='Écouter')
+        self.preview_button.configure(text='Preview')
 
     def _preview(self):
         if self.player.process is not None:
@@ -708,7 +710,7 @@ class StudioFileDialog(tk.Toplevel):
         try:
             _BEFORE_PREVIEW()
             self.player.start(files[0].path)
-            self.preview_button.configure(text='Arrêter')
+            self.preview_button.configure(text='Stop')
         except OSError as exc:
             self.status_var.set(str(exc))
 
@@ -789,18 +791,18 @@ class StudioFileDialog(tk.Toplevel):
         self._build_places()
 
     def _new_folder(self):
-        name = simpledialog.askstring('Nouveau dossier', 'Nom du dossier :', parent=self)
+        name = messagebox.askstring('New folder', 'Folder name:', parent=self)
         if not name:
             return
         if name in ('.', '..') or '/' in name or '\\' in name:
-            messagebox.showerror('Nouveau dossier', 'Saisissez un nom de dossier simple.', parent=self)
+            messagebox.showerror('New folder', 'Enter a folder name without a path.', parent=self)
             return
         try:
             path = Path(self.current_dir) / name
             path.mkdir()
             self.navigate(str(path))
         except OSError as exc:
-            messagebox.showerror('Nouveau dossier', str(exc), parent=self)
+            messagebox.showerror('New folder', str(exc), parent=self)
 
     def _resolve(self, name):
         name = os.path.expanduser(str(name))
@@ -814,10 +816,10 @@ class StudioFileDialog(tk.Toplevel):
         if self.mode == 'directory':
             path = self._resolve(text) if text else self.current_dir
             if os.path.exists(path) and not os.path.isdir(path):
-                self.status_var.set('Sélectionnez un dossier.')
+                self.status_var.set('Select a folder.')
                 return 'break'
             if self.options.get('mustexist', True) and not os.path.isdir(path):
-                self.status_var.set('Ce dossier n’existe pas.')
+                self.status_var.set('This folder does not exist.')
                 return 'break'
             self._finish(path)
             return 'break'
@@ -825,7 +827,7 @@ class StudioFileDialog(tk.Toplevel):
             if len(entries) == 1 and entries[0].is_dir:
                 self.navigate(entries[0].path)
             else:
-                self.status_var.set('Sélectionnez un fichier ou saisissez son nom.')
+                self.status_var.set('Select a file or enter its name.')
             return 'break'
         path = self._resolve(text)
         if os.path.isdir(path):
@@ -835,13 +837,13 @@ class StudioFileDialog(tk.Toplevel):
             path = self._resolve(_save_name(text, self.filters, max(0, self.filter_box.current()),
                                             self.options.get('defaultextension')))
             if not os.path.isdir(os.path.dirname(path)):
-                self.status_var.set('Le dossier de destination n’existe pas.')
+                self.status_var.set('The destination folder does not exist.')
                 return 'break'
             if os.path.isdir(path):
-                self.status_var.set('Ce nom désigne un dossier.')
+                self.status_var.set('That name belongs to a folder.')
                 return 'break'
             if os.path.exists(path) and self.options.get('confirmoverwrite', True):
-                if not messagebox.askyesno('Remplacer le fichier ?', f'{Path(path).name}\n\nCe fichier existe déjà. Le remplacer ?', parent=self):
+                if not messagebox.askyesno('Replace file?', f'{Path(path).name}\n\nThis file already exists. Replace it?', parent=self):
                     return 'break'
             self._finish(path)
             return 'break'
@@ -859,7 +861,7 @@ class StudioFileDialog(tk.Toplevel):
         else:
             paths = [path]
         if not paths or any(not os.path.isfile(p) for p in paths):
-            self.status_var.set('Un des fichiers demandés est introuvable.')
+            self.status_var.set('One of the requested files could not be found.')
             return 'break'
         self._finish(tuple(paths) if self.mode == 'multiple' else paths[0])
         return 'break'
@@ -914,8 +916,8 @@ def _choose(mode, **options):
                 return empty
         except tk.TclError:
             pass
-    root = _PARENT() or tk._default_root
     parent = options.pop('parent', None)
+    root = parent._root() if isinstance(parent, tk.Misc) else (_PARENT() or tk._default_root)
     temporary_root = None
     if root is None and parent is not None and not isinstance(parent, str):
         root = parent._root()

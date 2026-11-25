@@ -10,7 +10,9 @@ Run: python tb303_studio.py
 import sys, os, json, math
 import numpy as np
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk
+import studio_messages as messagebox
+import studio_file_dialog as filedialog
 from tb303 import TB303, DEMO_PATTERN, parse_step, apply_play_mode
 try:
     from tb303_rt import RealtimeEngine, _HAS_NUMBA
@@ -80,8 +82,9 @@ class SkinStudio:
     SR = 44100
 
     def __init__(self, root, image_path):
+        messagebox.use_english(root)
         if not _HAS_PIL:
-            raise SystemExit("Pillow requis : pip install pillow")
+            raise SystemExit("Pillow is required. Install it with: pip install pillow")
         self.root = root
         self.tb = TB303(self.SR)
         self.M = SKIN_MAP
@@ -123,10 +126,10 @@ class SkinStudio:
         # --- File menu: .tb303 project (full state) + WAV export ---
         menubar = tk.Menu(root)
         filem = tk.Menu(menubar, tearoff=0)
-        filem.add_command(label="Open project\u2026   (Ctrl+O)", command=self._load_project)
-        filem.add_command(label="Save project\u2026   (Ctrl+S)", command=self._save_project)
+        filem.add_command(label="Open project...   (Ctrl+O)", command=self._load_project)
+        filem.add_command(label="Save project...   (Ctrl+S)", command=self._save_project)
         filem.add_separator()
-        filem.add_command(label="Export WAV\u2026", command=self._save)
+        filem.add_command(label="Export WAV...", command=self._save)
         menubar.add_cascade(label="File", menu=filem)
         root.config(menu=menubar)
         root.bind("<Control-s>", lambda e: self._save_project())
@@ -182,7 +185,7 @@ class SkinStudio:
             self.mode = "pygame"
             return True
         except Exception as e:
-            self.audio_err = f"audio KO ({e})"
+            self.audio_err = f"Audio unavailable ({e})"
             return False
 
     def _push_rt(self):
@@ -306,7 +309,7 @@ class SkinStudio:
                 self.cv.create_rectangle(S(cx) - S(C["hw"]), S(C["cy"]) - S(C["hh"]),
                                          S(cx) + S(C["hw"]), S(C["cy"]) + S(C["hh"]),
                                          outline=self.M["sel"], width=3, tags="dyn")
-        msg = ("\u25b6 lecture" if self.playing else (self.audio_err if not self.audio_ok else "Pret"))
+        msg = ("\u25b6 Playing" if self.playing else (self.audio_err if not self.audio_ok else "Ready"))
         self.cv.create_text(S(self.M["status"][0]), S(self.M["status"][1]), anchor="w",
                             text=msg, fill="#d8c08a", font=("Georgia", max(8, int(S(11)))), tags="dyn")
 
@@ -464,7 +467,7 @@ class SkinStudio:
             try:
                 self._push_rt()                   # real-time: instant update
             except Exception as e:
-                self.audio_err = f"push KO ({e})"
+                self.audio_err = f"Audio update failed ({e})"
         elif self.playing and self.audio_ok:
             self._play_loop()                     # pygame: re-render the loop
 
@@ -477,7 +480,7 @@ class SkinStudio:
             self._snd.play(loops=-1)
         except Exception as e:
             self.playing = False
-            self.audio_err = f"RUN KO ({e})"
+            self.audio_err = f"Playback failed ({e})"
             self.refresh()
 
     def _toggle_run(self):
@@ -487,7 +490,7 @@ class SkinStudio:
                 "The audio engine is not active: " + (self.audio_err or "pygame missing") + ".\n\n"
                 "So RUN has nothing to play (the button works, there is just no sound).\n\n"
                 "In the terminal where you launch the script:\n"
-                "    pip install pygame   (ou : pip install sounddevice numba)\n"
+                "    pip install pygame   (or: pip install sounddevice numba)\n"
                 "then relaunch.  (SAVE WAV works without audio.)")
             return
         if self.mode == "rt":
@@ -567,8 +570,8 @@ class SkinStudio:
 
     def _save_project(self):
         path = filedialog.asksaveasfilename(
-            defaultextension=".tb303", filetypes=[("Projet TB-303", "*.tb303"), ("Tous", "*.*")],
-            initialfile="mon_pattern.tb303")
+            defaultextension=".tb303", filetypes=[("TB-303 project", "*.tb303"), ("All files", "*.*")],
+            initialfile="my_pattern.tb303")
         if not path:
             return
         try:
@@ -579,7 +582,7 @@ class SkinStudio:
 
     def _load_project(self):
         path = filedialog.askopenfilename(
-            filetypes=[("Projet TB-303", "*.tb303"), ("Tous", "*.*")])
+            filetypes=[("TB-303 project", "*.tb303"), ("All files", "*.*")])
         if not path:
             return
         try:
@@ -603,8 +606,9 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     image = args[0] if args else os.path.join(here, "tb303_skin.png")
     if not os.path.exists(image):
-        raise SystemExit(f"Image introuvable : {image}")
+        raise SystemExit(f"Image not found: {image}")
     root = tk.Tk()
+    filedialog.configure(parent=lambda: root, app_name="tb303_studio")
     app = SkinStudio(root, image)
 
     def _on_close():

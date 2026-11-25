@@ -6,3 +6,5 @@ tb303-old.py
 *.log
 !Instruments/**
 !Projects/**
+!Audio_Demos/*.wav
+!Musics/*.wav

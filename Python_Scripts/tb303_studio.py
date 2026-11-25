@@ -12,7 +12,15 @@ import sys, os, json, math, time, shutil, filecmp, subprocess, tempfile, threadi
 import numpy as np
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk
+import studio_messages as messagebox
+import studio_file_dialog as filedialog
+from classic_sequence import Pattern, Track, SLOTS, TRACKS, label as slot_label
+from classic_controls import ClassicControls, edit
+from face_layout import WIDTH as FACE_WIDTH, ART as FACE_ART, BAY as FACE_RISE, panel_map
+from sequencer_face import SequencerFace, compose as compose_face
+from engraved_controls import SkinSelector, dial_index
+from classic_track import MixerTrack
 from tb303 import TB303, DEMO_PATTERN, parse_step, apply_play_mode
 from live_recording import MixerOutputTap, WaveTake
 from skin_lighting import STYLES, SkinLights
@@ -33,19 +41,7 @@ try:
     _HAS_PYGAME = True
 except Exception:
     _HAS_PYGAME = False
-# File chooser: the Tk/ttk chooser shared with XTTS Studio (sizes, dates,
-# sorting, search, favourites, and Listen on audio files). It replaces Tk's
-# basic dialogs everywhere in this program; without the module they stay.
-try:
-    import studio_file_dialog as _file_dialog
-    filedialog.askopenfilename = _file_dialog.askopenfilename
-    filedialog.askopenfilenames = _file_dialog.askopenfilenames
-    filedialog.asksaveasfilename = _file_dialog.asksaveasfilename
-    filedialog.askdirectory = _file_dialog.askdirectory
-except Exception:
-    _file_dialog = None
-
-SCALE_MAP = {"1/8": 2, "1/8T": 3, "1/16": 4, "1/16T": 6, "1/32": 8}
+from live_pattern import DIVISIONS as SCALE_MAP
 PLAYMODES = {"Forward": "forward", "Reverse": "reverse", "Fwd&Rev": "fwd_rev",
              "Invert": "invert", "Random": "random"}
 PRESETS = {
@@ -59,10 +55,10 @@ PRESETS = {
                      "env_mod": 0.35, "decay": 0.45, "accent": 0.45, "distortion": 0.0, "shuffle": 0.0},
 }
 KNOB_SPEC = {
-    "tuning": (400, 480, 440, "{:.0f}"), "cutoff": (0, 1, 0.40, "{:.2f}"),
+    "tuning": (440*2**(-7/12), 440*2**(7/12), 440, "{:.0f}"), "cutoff": (0, 1, 0.40, "{:.2f}"),
     "resonance": (0, 1, 0.10, "{:.2f}"), "env_mod": (0, 1, 0.12, "{:.2f}"),
     "decay": (0, 1, 0.40, "{:.2f}"), "accent": (0, 1, 0.30, "{:.2f}"),
-    "bpm": (60, 200, 130, "{:.0f}"), "distortion": (0, 1, 0.0, "{:.2f}"),
+    "bpm": (40, 300, 130, "{:.0f}"), "distortion": (0, 1, 0.0, "{:.2f}"),
     "volume": (0, 1, 0.9, "{:.2f}"), "shuffle": (0, 0.66, 0.0, "{:.2f}"),
 }
 
@@ -207,8 +203,8 @@ def _migrate_lowercase_folders():
             print(f"Could not move {old} to {new}: {e}")
 TB303_ID = "TB-303"
 SAMPLE_PREFIX = "Sample: "              # instrument id of a sample = prefix + file name
-N_BANKS = 8
-PROJECT_VERSION = 3
+N_BANKS = SLOTS
+PROJECT_VERSION = 4
 
 
 def fit_text(text, font, width):
@@ -220,20 +216,23 @@ def fit_text(text, font, width):
     lo, hi = 0, len(text)
     while lo < hi:
         mid = (lo + hi + 1) // 2
-        if font.measure(text[:mid].rstrip() + "\u2026") <= width:
+        if font.measure(text[:mid].rstrip() + "...") <= width:
             lo = mid
         else:
             hi = mid - 1
-    return text[:lo].rstrip() + "\u2026" if lo else ""
+    return text[:lo].rstrip() + "..." if lo else ""
 
 
-class SkinStudio:
+class SkinStudio(ClassicControls):
     SR = 44100
 
     def __init__(self, root, image_path):
+        messagebox.use_english(root)
         if not _HAS_PIL:
-            raise SystemExit("Pillow requis : pip install pillow")
+            raise SystemExit("Pillow is required. Install it with: pip install pillow")
         self.root = root
+        self._roland_view=None
+        self._panel_shift=0
         self.tb = TB303(self.SR)
         self._skins = {
             key: (label, _find_skin() if key == DEFAULT_SKIN else os.path.join(ART_SKINS_DIR, filename), style)
@@ -245,8 +244,8 @@ class SkinStudio:
         if self._skin == "custom":
             self._skins["custom"] = ("Custom: " + os.path.basename(image_path), image_path, {})
         self.skin_v = tk.StringVar(root, value=self._skin)
-        self.M = {**SKIN_MAP, **self._skins[self._skin][2]}
-        self.img, self.scale, self._disp_rgb, self.bg = self._prepare_panel(image_path, self._skin)
+        self.M = panel_map({**SKIN_MAP, **self._skins[self._skin][2]})
+        self.img, self.scale, self._disp_rgb, self.bg, atlas = self._prepare_panel(image_path, self._skin)
         self.IW, self.IH = self.img.size
         self._update_window_title()
         root.resizable(False, False)
@@ -279,33 +278,33 @@ class SkinStudio:
         self._lighting = None
         self._lamp_items = []
         self._lamp_frames = []
-        self._loop_audio = None
-        self._loop_t0 = 0.0
-        self._loop_dur = 1.0
         self._take = None
         self._record_engine = None
         self._mixer_tap = None
         self._mixer_error = None
         self._mixer_take = None
         self._mixer_level = 0.0
+        self._classic_boot()
         self._build_lamp_frames()
         self.audio_ok = self._init_audio()
         self._presample_colors()
         self._make_combos()
+        self._face = SequencerFace(self, atlas)
         self.cv.bind("<Button-1>", self._click)
         self.cv.bind("<B1-Motion>", self._motion)
-        self.cv.bind("<ButtonRelease-1>", lambda e: setattr(self, "_drag", None))
+        self.cv.bind("<ButtonRelease-1>", self._release_pointer)
+        self.cv.bind("<Motion>", self._face.move)
         self.cv.bind("<MouseWheel>", self._wheel)
         self.cv.bind("<Button-4>", self._wheel)
         self.cv.bind("<Button-5>", self._wheel)
         # --- File menu: .tb303 project (full state) + WAV export ---
         menubar = tk.Menu(root)
         filem = tk.Menu(menubar, tearoff=0)
-        filem.add_command(label="Open project\u2026   (Ctrl+O)", command=self._load_project)
-        filem.add_command(label="Save project\u2026   (Ctrl+S)", command=self._save_project)
+        filem.add_command(label="Open project...   (Ctrl+O)", command=self._load_project)
+        filem.add_command(label="Save project...   (Ctrl+S)", command=self._save_project)
         filem.add_separator()
-        filem.add_command(label="Import pattern from audio\u2026", command=self._import_audio)
-        filem.add_command(label="Export WAV\u2026", command=self._save)
+        filem.add_command(label="Import pattern from audio...", command=self._import_audio)
+        filem.add_command(label="Export WAV...", command=self._save)
         menubar.add_cascade(label="File", menu=filem)
         # Rebuilt each time it opens, so a file dropped into Instruments/ shows up.
         self.instr_menu = tk.Menu(menubar, tearoff=0,
@@ -315,7 +314,7 @@ class SkinStudio:
         self.samples = {}                        # id -> {"name", "path", "sampler"}
         self.irt = None
         self.irt_ok = instruments_rt._HAS_RT_INSTR
-        if self.irt_ok:                          # compile the sampler now, not on first use
+        if self.irt_ok:                          # compile the voices now, not on first use
             threading.Thread(target=instruments_rt.warm_up, name="sampler warm-up",
                              daemon=True).start()
         self._one_stream = False                 # True when the device takes one stream only
@@ -328,7 +327,7 @@ class SkinStudio:
             skin_menu.add_radiobutton(label=label, variable=self.skin_v, value=key,
                                       command=self._change_skin)
         skin_menu.add_separator()
-        skin_menu.add_command(label="Active Skin Details…", command=self._show_skin_details)
+        skin_menu.add_command(label="Active Skin Details...", command=self._show_skin_details)
         menubar.add_cascade(label="Skin", menu=skin_menu)
         _migrate_lowercase_folders()
         for d in (PROJECTS_DIR, INSTRUMENTS_DIR):
@@ -336,17 +335,18 @@ class SkinStudio:
                 os.makedirs(d, exist_ok=True)
             except OSError:
                 pass
-        if _file_dialog is not None:
-            _file_dialog.configure(
-                parent=lambda: self.root,
-                shortcuts=lambda: [("Projets TB-303", PROJECTS_DIR),
-                                   ("Instruments", INSTRUMENTS_DIR),
-                                   ("TB303-Studio", ROOT)],
-                app_name="tb303_studio")          # its own favourites and last folders
+        filedialog.configure(
+            parent=lambda: self.root,
+            shortcuts=lambda: [("TB-303 projects", PROJECTS_DIR), ("Instruments", INSTRUMENTS_DIR),
+                               ("TB303-Studio", ROOT)], app_name="tb303_studio")
+        from roland_panel import install as install_photo_panel
+        install_photo_panel(self,menubar)
+        self._classic_menu(menubar)
         root.config(menu=menubar)
         root.bind("<Control-s>", lambda e: self._save_project())
         root.bind("<Control-o>", lambda e: self._load_project())
         self._apply_preset("Classic Bass")
+        self._ready=True
         self.refresh()
 
     def _prepare_panel(self, path, skin):
@@ -354,23 +354,26 @@ class SkinStudio:
             image = source.convert("RGB")
         if skin in ART_SKINS and image.size != PANEL_SIZE:
             raise ValueError(f"Expected a {PANEL_SIZE[0]} × {PANEL_SIZE[1]} px panel.")
+        if image.size != PANEL_SIZE:
+            # Custom art uses the same relative map as the standard illustrated face.
+            image = image.resize(PANEL_SIZE, Image.LANCZOS)
+        image, atlas = compose_face(image, skin)
+        self._blank_record_plate(image, skin, FACE_RISE)
         width, height = image.size
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        scale = min(1.0, (sw - 30) / width, (sh - 90) / height)
-        display = image.copy()
-        self._blank_record_plate(display, skin)
-        if scale < 1:
-            display = display.resize((int(width * scale), int(height * scale)), Image.LANCZOS)
-        return image, scale, display, ImageTk.PhotoImage(display, master=self.root)
+        scale = min(1., (sw - 22) / FACE_WIDTH, (sh - 78) / height)
+        display = image if scale == 1 else image.resize((round(width*scale),round(height*scale)), Image.LANCZOS)
+        return image, scale, display, ImageTk.PhotoImage(display, master=self.root), atlas
 
     @staticmethod
-    def _blank_record_plate(display, skin):
+    def _blank_record_plate(display, skin, offset=0):
         """Clear the old, baked-in text while keeping the button's frame."""
         engraved = skin in (DEFAULT_SKIN, "steampunk_ii", "custom")
         if engraved:
             left, top, right, bottom = 397, 718, 514, 741
         else:
             left, top, right, bottom = 408, 720, 502, 736
+        top+=offset; bottom+=offset
         # Fade into the adjacent material so the mounted button stays visible.
         plate = np.asarray(display.crop((left, top - 1, right, bottom + 1)), dtype=np.float32)
         face = plate[1:-1]
@@ -386,13 +389,25 @@ class SkinStudio:
         pixels = face * (1 - feather) + clean * feather
         display.paste(Image.fromarray(pixels.astype(np.uint8)), (left, top))
 
+    def show_panel(self, name):
+        if name=="roland":
+            if self._active_selector is not None:self._active_selector.dismiss()
+            if self._roland_view is None:
+                from roland_panel import RolandPanel
+                self._roland_view=RolandPanel(self)
+            self._roland_view.show()
+        elif self._roland_view is not None:
+            self._roland_view.hide()
+        self.panel_v.set(name);self._update_window_title()
+
     def _change_skin(self):
+        if self._roland_view is not None and self._roland_view.visible:self.show_panel("studio")
         key = self.skin_v.get()
         if key == self._skin:
             return
         label, path, style = self._skins[key]
         try:
-            image, scale, display, photo = self._prepare_panel(path, key)
+            image, scale, display, photo, atlas = self._prepare_panel(path, key)
         except (OSError, ValueError, tk.TclError) as exc:
             self.skin_v.set(self._skin)
             messagebox.showerror("TB-303 Studio", f"Could not load {label}:\n{path}\n\n{exc}",
@@ -400,11 +415,12 @@ class SkinStudio:
             return
 
         self._skin = key
-        self.M = {**SKIN_MAP, **style}
+        self.M = panel_map({**SKIN_MAP, **style})
         self.img, self.scale, self._disp_rgb, self.bg = image, scale, display, photo
         self.IW, self.IH = image.size
         self.cv.configure(width=display.width, height=display.height)
         self.cv.itemconfigure(self._background_item, image=self.bg)
+        self._face.mount(atlas)
         self._update_window_title()
         self._presample_colors()
         self._style_combos()
@@ -419,7 +435,9 @@ class SkinStudio:
         label = self._skins[self._skin][0]
         edition = " [Live Lights]" if self._skin in STYLES else ""
         project = getattr(self, "_project_path", None)
-        title = f"TB-303 Studio — {label}{edition}"
+        if self._roland_view is not None and self._roland_view.visible:
+            label,edition="Roland TB-303 (photo)",""
+        title = f"TB-303 Studio Classic · Front Panel Mk III.2 — {label}{edition}"
         if project:
             title += " — " + os.path.basename(project)
         self.root.title(title)
@@ -427,8 +445,9 @@ class SkinStudio:
     def _show_skin_details(self):
         label, path, _ = self._skins[self._skin]
         edition = " (Live Lights)" if self._skin in STYLES else ""
-        messagebox.showinfo("Active Skin", f"{label}{edition}\n\n"
+        messagebox.showinfo("Active Skin", f"Front Panel Mk III.2 · {label}{edition}\n\n"
                             f"Panel image\n{os.path.realpath(path)}\n\n"
+                            f"Inlaid control surface\n{str(FACE_ART / self._skin) if self._skin != 'custom' else 'Built from custom artwork'}\n\n"
                             f"Studio script\n{os.path.realpath(__file__)}",
                             parent=self.root)
 
@@ -448,7 +467,7 @@ class SkinStudio:
         self.steps = []
         for s in pattern[:16]:
             d = parse_step(s)
-            self.steps.append({"note": d["note"], "accent": d["accent"], "slide": d["slide"]})
+            self.steps.append(d)
         while len(self.steps) < 16:
             self.steps.append({"note": None, "accent": False, "slide": False})
 
@@ -460,6 +479,7 @@ class SkinStudio:
         if _HAS_RT:
             try:
                 self.rt = RealtimeEngine(sr=self.SR)
+                self.rt.set_profile(self.profile)
                 self.rt.start()
                 self.mode = "rt"
                 self._push_rt()
@@ -481,7 +501,7 @@ class SkinStudio:
             self.mode = "pygame"
             return True
         except Exception as e:
-            self.audio_err = f"audio KO ({e})"
+            self.audio_err = f"Audio unavailable ({e})"
             return False
 
     def _push_rt(self, e=None):
@@ -497,9 +517,8 @@ class SkinStudio:
         e.set_param("swing", self.kv["shuffle"])
         e.set_param("waveform", self.waveform)
         e.set_param("subdiv", SCALE_MAP[self.scale_v.get()])
-        steps = apply_play_mode([dict(s) for s in self.steps],
-                                PLAYMODES[self.playmode_v.get()])
-        e.set_pattern([(s["note"], s["accent"], s["slide"]) for s in steps])
+        e.set_profile(self.profile)
+        e.set_pattern(self._order_live() if e is self.rt else self._ordered())
 
     _RT_PARAM = {"shuffle": "swing"}            # studio name -> engine name
 
@@ -517,17 +536,23 @@ class SkinStudio:
         e = self.rt
         if e is None:
             return
-        steps = apply_play_mode([dict(s) for s in self.steps],
-                                PLAYMODES[self.playmode_v.get()])
-        e.set_pattern([(s["note"], s["accent"], s["slide"]) for s in steps])
+        e.set_profile(self.profile)
+        e.set_pattern(self._order_live() if e is self.rt else self._ordered())
 
     def _knob_live(self, k):
         """Knob moved: push audio RIGHT AWAY, redraw is coalesced."""
+        if self._live is not None:
+            if hasattr(self._live,"knob"):
+                self._live.knob(self.cur_bank,k,self.kv[k])
+            else:
+                self._live.edit(self._program(self.cur_bank))
+            self._schedule_refresh(); return
+        if self._track_player is not None:
+            self._track_parameter(k,self.kv[k])
+            self._schedule_refresh(); return
         if not self._is303():
             if self._instr_rt and self.irt is not None:
                 self._irt_set_param(k)          # live, no re-render
-            else:
-                self._schedule_instr()          # coalesced re-render of the instrument loop
             self._schedule_refresh()
             return
         if self.mode == "rt" and self.rt is not None:
@@ -535,60 +560,41 @@ class SkinStudio:
                 self._push_param(k)             # audio first -> no latency
             except Exception:
                 pass
-        elif self.playing and self.audio_ok:
-            self._play_loop()
         self._schedule_refresh()
 
-    def _schedule_instr(self):
-        if self.playing and not getattr(self, "_instr_pending", False):
-            self._instr_pending = True
-            self.root.after(55, self._do_instr)
-
-    def _do_instr(self):
-        self._instr_pending = False
-        if self.playing and not self._is303():
-            self._play_instr()
+    def _track_parameter(self,k,value):
+        p=self._track_player
+        if p is None:return
+        if self._track_host is not None:
+            from roland_audio import set_track_parameter
+            with self._track_host._lock:set_track_parameter(p,k,value)
+        elif hasattr(p,"knob"):p.knob(k,value)
 
     def _schedule_refresh(self):
         """Coalesce redraws (~60 fps max): audio stays prioritized and immediate."""
         if not getattr(self, "_refresh_pending", False):
             self._refresh_pending = True
-            self.root.after(16, self._do_refresh)
+            self._refresh_job=self.root.after(16, self._do_refresh)
 
     def _do_refresh(self):
+        self._refresh_job=None
         self._refresh_pending = False
         self.refresh()
 
     def _make_combos(self):
+        self._active_selector = None
         self._combos = {}
         for name, var, vals in [("scale", self.scale_v, list(SCALE_MAP)),
                                 ("playmode", self.playmode_v, list(PLAYMODES)),
                                 ("preset", self.preset_v, list(PRESETS))]:
-            cb = ttk.Combobox(self.cv, textvariable=var, values=vals, state="readonly",
-                              style="Skin.TCombobox")
-            self._combos[name] = (cb, self.cv.create_window(0, 0, window=cb))
-            if name == "preset":
-                cb.bind("<<ComboboxSelected>>", lambda e: self._apply_preset(self.preset_v.get()))
-            else:
-                cb.bind("<<ComboboxSelected>>", lambda e: self._changed())
+            cb = SkinSelector(self.cv,var,vals,lambda n=name:self._select_combo(n))
+            self._combos[name] = (cb,self.cv.create_window(0,0,window=cb,anchor="nw"))
         self._style_combos()
 
     def _style_combos(self):
-        field, button, foreground = self.M["combo_colors"]
-        try:
-            st = ttk.Style(self.root)
-            st.theme_use("clam")
-            st.configure("Skin.TCombobox", fieldbackground=field, background=button,
-                         foreground=foreground, arrowcolor=foreground)
-            st.map("Skin.TCombobox", fieldbackground=[("readonly", field)],
-                   foreground=[("readonly", foreground)])
-        except Exception:
-            pass
-        for name, (cb, item) in self._combos.items():
-            cx, cy, w = self.M["combos"][name]
-            cb.configure(width=max(6, int(self.S(w) / 8)), font=(self.M["font"], 9))
-            self.cv.coords(item, self.S(cx), self.S(cy))
-            self.cv.itemconfigure(item, width=round(self.S(w)) if self._skin in ART_SKINS else 0)
+        for name,(cb,item) in self._combos.items():
+            x,y=cb.fit(self,*self.M["combos"][name])
+            self.cv.coords(item,x,y)
 
     def refresh(self):
         self.cv.delete("dyn")
@@ -597,15 +603,10 @@ class SkinStudio:
         for k, (cx, cy, r, vx, vy) in self.M["knobs"].items():
             vmin, vmax, _, fmt = KNOB_SPEC[k]
             frac = (self.kv[k] - vmin) / (vmax - vmin)
+            if k=="tuning": frac=.5+12*math.log2(self.kv[k]/440.)/14
             ang = math.radians(135 + frac * 270)
-            self.cv.create_line(S(cx), S(cy), S(cx + (r - 6) * math.cos(ang)),
-                                S(cy + (r - 6) * math.sin(ang)), fill=self.M["needle"],
-                                width=max(2, int(S(3))), capstyle="round", tags="dyn")
-            self.cv.create_oval(S(cx) - 3, S(cy) - 3, S(cx) + 3, S(cy) + 3,
-                                fill=self.M["knob_hub"], outline=self.M["needle"], tags="dyn")
+            dial_index(self,cx,cy,r,ang)
             if self.M.get("show_values"):
-                self.cv.create_rectangle(S(vx) - S(22), S(vy) - S(9), S(vx) + S(22), S(vy) + S(9),
-                                         fill=self.valbg[k], outline="", tags="dyn")
                 self.cv.create_text(S(vx), S(vy), text=fmt.format(self.kv[k]), fill=self.M["val_fg"],
                                     font=(family, max(7, int(S(11))), "bold"), tags="dyn")
         for w, (x, y) in self.M["waveform"].items():
@@ -614,13 +615,19 @@ class SkinStudio:
                                     outline=self.M["needle"], width=2, tags="dyn")
         by = self.M["banks_y"]
         for i, bx in enumerate(self.M["banks"]):
-            if i == self.cur_bank:
+            group=self._selector_slot()//8
+            if group*8+i == self.cur_bank:
                 self.cv.create_oval(S(bx) - S(22), S(by) - S(17), S(bx) + S(22), S(by) + S(17),
                                     outline=self.M["needle"], width=3, tags="dyn")
+            if group*8+i == self._pending_bank:
+                self.cv.create_oval(S(bx)-S(24),S(by)-S(19),S(bx)+S(24),S(by)+S(19),
+                                    outline=self.M["sel"],width=2,dash=(4,3),tags=("dyn","queued_bank"))
         C = self.M["cells"]
         for i, cx in enumerate(C["cx"]):
             st = self.steps[i]
-            note = st["note"] or "\u00b7"
+            note = "TIE" if st.get("tie") else (st["note"] or ("?" if st.get("on") else "·"))
+            if i >= self._pat().length:
+                note = "×"
             sub = ("+" if st["accent"] else "") + ("~" if st["slide"] else "")
             col = self.M["accent_fg"] if st["accent"] else (
                 self.M["slide_fg"] if st["slide"] else self.M["ink"])
@@ -633,11 +640,12 @@ class SkinStudio:
                 self.cv.create_rectangle(S(cx) - S(C["hw"]), S(C["cy"]) - S(C["hh"]),
                                          S(cx) + S(C["hw"]), S(C["cy"]) + S(C["hh"]),
                                          outline=self.M["sel"], width=3, tags="dyn")
+        self._controls_refresh()
         take = self._take
         label = "RECORD"
         ink = "#f3dbab" if self._skin in (DEFAULT_SKIN, "steampunk_ii", "custom") else self.M["ink"]
         msg = getattr(self, "_busy", None) or \
-            ("\u25b6 lecture" if self.playing else (self.audio_err if not self.audio_ok else "Pret"))
+            ("\u25b6 Playing" if self.playing else (self.audio_err if not self.audio_ok else "Ready"))
         if take is not None:
             if take.recording:
                 label, msg = "STOP REC", "\u25cf Recording"
@@ -679,20 +687,29 @@ class SkinStudio:
         return cx - hw <= x <= cx + hw and cy - hh <= y <= cy + hh
 
     def _click(self, e):
+        if self._active_selector is not None:
+            self._active_selector.dismiss()
+            self.cv.focus_set()
+            return  # A click outside the drawer dismisses it without sounding a note.
+        if isinstance(self.cv.focus_get(),SkinSelector):
+            self.cv.focus_set()
+        if self._face.press(e): return
         x, y = self._to_img(e)
         k = self._knob_at(x, y)
         if k:
+            self._begin_gesture(k)
             self._drag = (k, y)
             return
         for w, (wx, wy) in self.M["waveform"].items():
             if self._hit(x, y, wx, wy, 42, 16):
-                self.waveform = w
-                self._changed()
+                with self._editing("Waveform"):
+                    self.waveform = w
+                    self._changed()
                 return
         by = self.M["banks_y"]
         for i, bx in enumerate(self.M["banks"]):
             if self._hit(x, y, bx, by, 30, 20):
-                self._switch_bank(i)
+                self._switch_bank((self._selector_slot()//8)*8+i)
                 return
         for name, b in self.M["buttons"].items():
             if self._hit(x, y, b[0], b[1], b[2], b[3]):
@@ -705,17 +722,22 @@ class SkinStudio:
         C = self.M["cells"]
         for i, cx in enumerate(C["cx"]):
             if self._hit(x, y, cx, C["cy"], C["hw"], C["hh"]):
-                self.sel = i
-                self.refresh()
+                if i < self._pat().length:
+                    self.cursor(sum(x=="N" for x in self._pat().time[:i]) if self.editor=="Pitch" else i)
                 return
 
+    def _release_pointer(self, e):
+        if not self._face.release(e): self._release_knob(e)
+
     def _motion(self, e):
+        if self._face.captured:
+            self._face.move(e); return
         if not self._drag:
             return
         k, lasty = self._drag
         _, y = self._to_img(e)
         vmin, vmax = KNOB_SPEC[k][0], KNOB_SPEC[k][1]
-        self.kv[k] = min(vmax, max(vmin, self.kv[k] - (y - lasty) * (vmax - vmin) / 150.0))
+        self.kv[k] = min(vmax, max(vmin, (self.kv[k]*2**(-(y-lasty)*14/(150*12)) if k=="tuning" else self.kv[k] - (y - lasty) * (vmax - vmin) / 150.0)))
         self._drag = (k, y)
         self._knob_live(k)
 
@@ -725,9 +747,10 @@ class SkinStudio:
         if not k:
             return
         vmin, vmax = KNOB_SPEC[k][0], KNOB_SPEC[k][1]
+        self._begin_gesture(k,delayed=True)
         step = (vmax - vmin) / 40.0
         up = getattr(e, "num", None) == 4 or getattr(e, "delta", 0) > 0
-        self.kv[k] = min(vmax, max(vmin, self.kv[k] + (step if up else -step)))
+        self.kv[k] = min(vmax, max(vmin, (self.kv[k]*2**((1 if up else -1)*14/(40*12)) if k=="tuning" else self.kv[k] + (step if up else -step))))
         self._knob_live(k)
 
     def _piano_hit(self, x, y, px0, py0, px1, py1):
@@ -751,7 +774,7 @@ class SkinStudio:
          "accent": lambda: self._toggle_step("accent"), "slide": lambda: self._toggle_step("slide"),
          "oct_down": lambda: self._octave(-1), "oct_up": lambda: self._octave(1),
          "rest": lambda: self._set_note(None), "record": self._toggle_record, "clear": self._clear,
-         "demo": lambda: (self._load_pattern(DEMO_PATTERN), setattr(self, "sel", 0), self._changed())}[name]()
+         "demo": self._demo}[name]()
 
     def _apply_preset(self, name):
         p = PRESETS.get(name)
@@ -781,6 +804,10 @@ class SkinStudio:
             self.playmode_v.set(s["playmode"])
 
     def _switch_bank(self, b):
+        self._finish_gesture()
+        if self._live is not None:
+            self._queue_live(b); return
+        if self._track_player is not None: self._stop()
         self._freeze_bank()
         self._enter_bank(b)
 
@@ -790,37 +817,28 @@ class SkinStudio:
         self.bank_settings[self.cur_bank] = self._capture_settings()
         self.bank_instr[self.cur_bank] = self.instrument
 
-    def _enter_bank(self, b):
+    def _enter_bank(self, b, *, live=None):
         """Make bank b the current one, WITHOUT storing the bank being left first
         (the caller has either frozen it or deliberately replaced it)."""
         self.cur_bank = b
         if self.banks[b] is None:
             self.banks[b] = [{"note": None, "accent": False, "slide": False} for _ in range(16)]
             self.bank_instr[b] = self.instrument  # a never-used bank inherits the instrument
-        if self.bank_settings[b] is not None:    # recall this bank's own sound
+        if live is not None:
+            self._apply_settings(live.settings)
+        elif self.bank_settings[b] is not None:    # recall this bank's own sound
             self._apply_settings(self.bank_settings[b])
         # (a never-used bank keeps the current sound, then gets its own copy when you leave it)
-        self.steps = [dict(s) for s in self.banks[b]]
-        self.sel = 0
+        self.steps = self._pat().grid()
+        self.pc=self.sel=0
+        if live is not None:
+            self.instrument=self.bank_instr[b]=live.iid; self._instr_var.set(live.iid)
+            self.refresh(); return
         if self.bank_instr[b] != self.instrument:
-            self._set_instrument(self.bank_instr[b])
+            self._nested+=1
+            try: self._set_instrument(self.bank_instr[b])
+            finally: self._nested-=1
         self._changed()
-
-    def _set_note(self, note):
-        self.steps[self.sel]["note"] = note
-        self._preview(note)
-        self.sel = (self.sel + 1) % 16
-        self._changed()
-
-    def _toggle_step(self, key):
-        self.steps[self.sel][key] = not self.steps[self.sel][key]
-        self._changed()
-
-    def _octave(self, d):
-        n = self.steps[self.sel]["note"]
-        if n:
-            self.steps[self.sel]["note"] = f"{n[:-1]}{int(n[-1]) + d}"
-            self._changed()
 
     def _params(self):
         return dict(bpm=self.kv["bpm"], waveform=self.waveform, cutoff=self.kv["cutoff"],
@@ -830,11 +848,17 @@ class SkinStudio:
                     play_mode=PLAYMODES[self.playmode_v.get()])
 
     def _render(self, repeats=1):
-        a = self.tb.render([dict(s) for s in self.steps], repeats=repeats, **self._params())
+        if self.profile=="classic" or any(x.get("tie") for x in self.steps[:self._pat().length]):
+            return self._render_profile(repeats)
+        p=self._params()
+        seq=self.steps[:self._pat().length]
+        if p["play_mode"]=="random":
+            seq=self._ordered(); p["play_mode"]="forward"
+        a = self.tb.render(seq, repeats=repeats, **p)
         return np.clip(a * self.kv["volume"] / 0.9, -1, 1)
 
     def _preview(self, note):
-        if not note:
+        if not note or self._track_player is not None or self._live is not None:
             return
         if not self._is303():
             if self._instr_rt and self.irt is not None:
@@ -852,8 +876,11 @@ class SkinStudio:
         try:
             p = self._params()
             p.update(bpm=80, subdiv=1, swing=0.0, play_mode="forward")
-            a = self.tb.render([{"note": note, "accent": False, "slide": False}], repeats=1, **p)
-            a = np.clip(a * self.kv["volume"] / 0.9, -1, 1)
+            if self.profile=="classic":
+                a=self._render_profile(note=note)
+            else:
+                a = self.tb.render([{"note": note, "accent": False, "slide": False}], repeats=1, **p)
+                a = np.clip(a * self.kv["volume"] / 0.9, -1, 1)
             self._ps = pygame.sndarray.make_sound(np.ascontiguousarray((a * 0.9 * 32767).astype(np.int16)))
             self._ps.play()
             self._flash_note(note, len(a) / self.SR)
@@ -862,68 +889,27 @@ class SkinStudio:
 
     def _changed(self):
         self.refresh()
+        if self._track_player is not None: return
+        if self._live is not None:
+            self._edit_live(); return
         if not self._is303():
             if self._instr_rt and self.irt is not None:
                 self._irt_push_all()              # live params + pattern, no re-render
-            elif self.playing:
-                self._play_instr()
             return
         if self.mode == "rt" and self.rt is not None:
             try:
                 self._push_rt()                   # real-time: instant update
             except Exception as e:
-                self.audio_err = f"push KO ({e})"
-        elif self.playing and self.audio_ok:
-            self._play_loop()                     # pygame: re-render the loop
-
-    def _play_loop(self):
-        try:
-            a = self._render(1)
-            self._loop_audio = a[:, 0] if a.ndim == 2 else a
-            self._loop_dur = max(1e-3, len(a) / self.SR)
-            self._loop_t0 = time.monotonic()
-            d = np.ascontiguousarray((np.clip(a, -1, 1) * 32767).astype(np.int16))
-            pygame.mixer.stop()
-            self._snd = pygame.sndarray.make_sound(d)
-            self._snd.play(loops=-1)
-        except Exception as e:
-            self.playing = False
-            self.audio_err = f"RUN KO ({e})"
-            self.refresh()
+                self.audio_err = f"Audio update failed ({e})"
 
     def _toggle_run(self):
-        if not self._is303():
-            self._toggle_instr()
-            return
-        if not self.audio_ok:
-            messagebox.showinfo(
-                "Audio unavailable",
-                "The audio engine is not active: " + (self.audio_err or "pygame missing") + ".\n\n"
-                "So RUN has nothing to play (the button works, there is just no sound).\n\n"
-                "In the terminal where you launch the script:\n"
-                "    pip install pygame   (ou : pip install sounddevice numba)\n"
-                "then relaunch.  (File > Export WAV works without audio.)")
-            return
-        if self.mode == "rt":
-            self.playing = not self.playing
-            if self.playing:
-                self._push_rt()
-                self.rt.set_playing(True)
-                self._vu_start()
-            else:
-                self.rt.set_playing(False)
-                self._vu_stop()
-            self.refresh()
-            return
-        if self.playing:
-            self._stop()
-        else:
-            self.playing = True
-            self._play_loop()
-            self._vu_start()
-            self.refresh()
+        if self.playing or self._track_player is not None:
+            self._stop(); return
+        self._start_live()
 
     def _stop(self):
+        reroute=self._end_live()
+        self._track_stop()
         self.playing = False
         self._vu_stop()
         if not self._is303():
@@ -935,9 +921,17 @@ class SkinStudio:
             self.rt.set_playing(False)
         elif self.audio_ok and _HAS_PYGAME:
             pygame.mixer.stop()
+        if reroute:self._route_stopped_voice(self.instrument)
         self.refresh()
 
     def close(self):
+        if getattr(self,"_refresh_job",None) is not None:
+            self.root.after_cancel(self._refresh_job);self._refresh_job=None;self._refresh_pending=False
+        if self._roland_view is not None:self._roland_view.hide()
+        if self._active_selector is not None:self._active_selector.dismiss()
+        self._end_live()
+        self._face.close()
+        self._track_stop()
         self._discard_take()
         self._vu_stop()
         if self._mixer_tap is not None:
@@ -1039,22 +1033,19 @@ class SkinStudio:
         self._update_lighting()
 
     def _active_engine(self):
+        if self._live is not None:return self._live_host
         if self._is303():
             return self.rt if self.mode == "rt" else None
         return self.irt if self._instr_rt else None
 
     def _vu_level(self):
+        if self._live is not None and self._live_host is None:return self._live.get_level()
+        if isinstance(self._track_player,MixerTrack): return self._track_player.get_level()
         engine = self._active_engine()
         if engine is not None:
             return min(1.0, engine.get_level())
         if self._mixer_tap is not None:
             return self._mixer_level
-        if self.playing and self._loop_audio is not None and self._loop_dur > 0:
-            pos = (time.monotonic() - self._loop_t0) % self._loop_dur
-            i = int(pos * self.SR)
-            w = self._loop_audio[i:i + 1024]
-            if len(w):
-                return float(min(1.0, np.sqrt(np.mean(w * w)) * 3.2))
         return 0.0
 
     def _update_lighting(self):
@@ -1065,18 +1056,28 @@ class SkinStudio:
         step = None
         if self.playing and self._vu_on:
             engine = self._active_engine()
-            if engine is not None:
-                step = engine.get_step()
-            elif self._loop_audio is not None:
-                # The offline loop alternates long/short steps when shuffle is on.
-                position = (now - self._loop_t0) % self._loop_dur
-                slot = position / self._loop_dur * len(self.steps)
-                pair = int(slot // 2)
-                step = 2 * pair + int(slot - 2 * pair >= 1 + self.kv["shuffle"])
+            if self._live is not None:
+                step=self._live.heard_cell()
+            elif self._track_player is not None:
+                step=self._track_player.heard_cell()
+            elif engine is not None:
+                n=engine.get_step()
+                step=self._play_cells[n % len(self._play_cells)] if self._play_cells else n
         self._lighting.show(self.level, step, note)
 
     def _vu_tick(self):
         self._vu_job = None
+        if self._live is not None:
+            if self._live.error:
+                err=self._live.error;self._stop()
+                messagebox.showerror("Pattern Play",err,parent=self.root);return
+            self._poll_live();self._face.readout()
+        if self._track_player is not None:
+            err=getattr(self._track_player,"error",None)
+            if err:
+                self._stop(); messagebox.showerror("Track Play",err,parent=self.root); return
+            self._face.readout()
+            if self._classic_win is not None and self._classic_win.winfo_exists(): self._classic_win.live()
         if not self.playing and time.monotonic() >= self._audition_until:
             self._vu_stop()
             return
@@ -1132,7 +1133,7 @@ class SkinStudio:
                 m.add_radiobutton(label=self._instr_label(iid), variable=self._instr_var,
                                   value=iid, command=lambda n=name: self._choose_library(n))
         m.add_separator()
-        m.add_command(label="Load sample…", command=self._load_sample)
+        m.add_command(label="Load sample...", command=self._load_sample)
         self._instr_var.set(self.instrument)
 
     def _choose_library(self, name):
@@ -1275,8 +1276,7 @@ class SkinStudio:
 
     def _irt_push_pattern(self, e=None):
         e = self.irt if e is None else e
-        steps = apply_play_mode([dict(s) for s in self.steps], PLAYMODES[self.playmode_v.get()])
-        e.set_pattern([(s["note"], s["accent"], s["slide"]) for s in steps])
+        e.set_pattern(self._order_live() if e is self.irt else self._ordered())
 
     def _irt_push_all(self, e=None):
         e = self.irt if e is None else e
@@ -1294,18 +1294,24 @@ class SkinStudio:
             return
         self.irt.set_param("swing" if k == "shuffle" else k, self.kv[k])
 
+    @edit("Instrument")
     def _set_instrument(self, name):
         """Give the CURRENT pattern this instrument (TB-303, a built-in voice or a
         loaded sample). Each of the 8 patterns keeps its own."""
         if name != TB303_ID and name not in instruments.BUILTIN and name not in self.samples:
             name = TB303_ID                       # unknown id (e.g. sample removed)
+        was = self._playing_internal_pattern()
+        self._stop()
+        self._route_stopped_voice(name)
+        if was: self._toggle_run()
+        self.refresh()
+
+    def _route_stopped_voice(self,name):
         take = self._take
         switching_at = None
         if take is not None and take.recording:
             self._disconnect_take()
             switching_at = time.monotonic()
-        was = self.playing
-        self._stop()
         self.instrument = name
         self.bank_instr[self.cur_bank] = name
         self._instr_var.set(name)
@@ -1323,18 +1329,15 @@ class SkinStudio:
             except (OSError, RuntimeError) as error:
                 self._finish_take()
                 messagebox.showwarning("Recording stopped", str(error), parent=self.root)
-        if was:
-            self._toggle_run()
-        self.refresh()
 
     def _load_sample(self):
         """Bring a new sound into the studio for the current pattern. No
         initialdir: the chooser reopens where the last sample came from. Samples
         already in Instruments/ are picked straight from the Instrument menu."""
         path = filedialog.askopenfilename(
-            title="Charger un sample pour ce pattern",
+            title="Load sample for this pattern",
             filetypes=[("Audio", "*.wav *.flac *.ogg *.mp3 *.aiff *.aif *.m4a *.aac *.opus *.wma"),
-                       ("Tous les fichiers", "*.*")])
+                       ("All files", "*.*")])
         if not path:
             return
         try:
@@ -1352,58 +1355,13 @@ class SkinStudio:
         if v is None:
             return np.zeros((1, 2))
         a = instruments.render_pattern(
-            self.steps, v, bpm=int(self.kv["bpm"]), subdiv=SCALE_MAP[self.scale_v.get()],
-            swing=self.kv["shuffle"], play_mode=PLAYMODES[self.playmode_v.get()],
+            self._ordered(), v, bpm=self.kv["bpm"], subdiv=SCALE_MAP[self.scale_v.get()],
+            swing=self.kv["shuffle"], play_mode="forward",
             repeats=repeats, tuning=self.kv["tuning"],
             cutoff=self.kv["cutoff"], resonance=self.kv["resonance"],
             env_mod=self.kv["env_mod"], decay=self.kv["decay"],
             distortion=self.kv["distortion"])
         return np.clip(a * self.kv["volume"], -1, 1)
-
-    def _play_instr(self):
-        if not self._ensure_pygame():
-            return
-        try:
-            a = self._render_instr(1)
-            self._loop_audio = a[:, 0] if a.ndim == 2 else a
-            self._loop_dur = max(1e-3, len(a) / self.SR)
-            self._loop_t0 = time.monotonic()
-            pygame.mixer.stop()
-            self._snd = pygame.sndarray.make_sound(
-                np.ascontiguousarray((a * 32767).astype(np.int16)))
-            self._snd.play(loops=-1)
-        except Exception as e:
-            self.playing = False
-            self.audio_err = f"instr KO ({e})"
-
-    def _toggle_instr(self):
-        if self._instr_rt and self.irt is not None:
-            if self.mode == "rt" and self.rt is not None:
-                self.rt.set_playing(False)
-            self.playing = not self.playing
-            if self.playing:
-                self._irt_load_voice()
-                self._irt_push_all()
-                self.irt.set_playing(True)
-                self._vu_start()
-            else:
-                self.irt.set_playing(False)
-                self._vu_stop()
-            self.refresh()
-            return
-        if not self._ensure_pygame():
-            messagebox.showinfo("Audio", "Instrument playback needs pygame:\n    pip install pygame")
-            return
-        if self.mode == "rt" and self.rt is not None:
-            self.rt.set_playing(False)
-        self.playing = not self.playing
-        if self.playing:
-            self._play_instr()
-            self._vu_start()
-        elif pygame.mixer.get_init():
-            pygame.mixer.stop()
-            self._vu_stop()
-        self.refresh()
 
     def _preview_instr(self, note):
         if not self._ensure_pygame():
@@ -1431,12 +1389,10 @@ class SkinStudio:
         if self._is303():
             if self.mode != "rt" or self.rt is None:
                 return None
-            import tb303_rt
             e = RealtimeEngine(sr=self.SR)
             self._push_rt(e)
             def block(buf):
-                tb303_rt.synth_block(buf, len(buf), e.state, e.params,
-                                     e.pat_f, e.pat_a, e.pat_s, e.nsteps, sr)
+                e.process(buf)
         else:
             if not (self._instr_rt and self.irt is not None):
                 return None
@@ -1465,7 +1421,7 @@ class SkinStudio:
         path = filedialog.asksaveasfilename(
             defaultextension=".wav", initialfile="tb303.wav",
             filetypes=[("WAV", "*.wav"), ("FLAC", "*.flac"), ("OGG", "*.ogg"),
-                       ("MP3", "*.mp3"), ("AIFF", "*.aiff"), ("Tous les fichiers", "*.*")])
+                       ("MP3", "*.mp3"), ("AIFF", "*.aiff"), ("All files", "*.*")])
         if not path:
             return
         try:
@@ -1486,7 +1442,7 @@ class SkinStudio:
     # ---------- Live WAV recording ----------
 
     def _connect_take(self):
-        if self._is303() and not self.audio_ok:
+        if self._live is None and self._track_player is None and self._is303() and not self.audio_ok:
             raise RuntimeError(self.audio_err or "The audio output is unavailable.")
         engine = self._active_engine()
         if engine is not None:
@@ -1613,7 +1569,7 @@ class SkinStudio:
         return f"{instr_label}  ·  {n} note{'s' if n > 1 else ''}"
 
     def _project_state(self, include=None):
-        """include: iterable of 0-based patterns to save; None or empty = all 8."""
+        """include: iterable of 0-based patterns to save; None or empty saves the entire project."""
         self._freeze_bank()
         inc = set(range(N_BANKS)) if not include else set(include)
         cur = self.cur_bank if self.cur_bank in inc else min(inc)
@@ -1635,6 +1591,11 @@ class SkinStudio:
             "preset": self.preset_v.get(),
             "cur_bank": cur,
             "banks": banks, "bank_settings": settings, "bank_instruments": instr,
+            "voice_profile":self.profile,
+            "classic_patterns":{str(i):self.patterns[i].dump() for i in inc if self.patterns[i] is not None},
+            # A partial pattern export is portable; never keep a track with dangling references.
+            "tracks":[t.dump() for t in self.tracks] if len(inc)==SLOTS else [],
+
         }
 
     @staticmethod
@@ -1646,15 +1607,25 @@ class SkinStudio:
         if not isinstance(st, dict) or st.get("format") != "tb303-studio":
             raise ValueError("This file is not a TB-303 project.")
 
+        if int(st.get("version",1)) > PROJECT_VERSION:
+            raise ValueError("This project was saved with a newer version of the Studio.")
         def eight(key):
-            v = st.get(key)
-            return list(v) if isinstance(v, list) and len(v) == N_BANKS else [None] * N_BANKS
-
-        banks = []
-        for b in eight("banks"):
-            banks.append(None if b is None else
-                         [{"note": s.get("note"), "accent": bool(s.get("accent")),
-                           "slide": bool(s.get("slide"))} for s in b])
+            v=st.get(key)
+            if v is None: return [None]*N_BANKS
+            if not isinstance(v,list) or len(v)>N_BANKS: raise ValueError(f"Invalid project table: {key}")
+            return v + [None]*(N_BANKS-len(v))
+        banks=[None if b is None else Pattern.from_grid(b).grid() for b in eight("banks")]
+        classic=[None]*N_BANKS
+        for ix,data in st.get("classic_patterns",{}).items():
+            idx=int(ix)
+            if not 0<=idx<N_BANKS: raise ValueError("Invalid pattern number.")
+            classic[idx]=Pattern.read(data)
+            banks[idx]=classic[idx].grid()
+        ts=st.get("tracks",[])
+        if not isinstance(ts,list) or len(ts)>TRACKS: raise ValueError("Invalid track list.")
+        tracks=[Track.read(t) for t in ts]+[Track() for _ in range(TRACKS-len(ts))]
+        profile=st.get("voice_profile","legacy")
+        if profile not in ("legacy","classic"): raise ValueError("Unknown sound profile.")
         settings = []
         for s in eight("bank_settings"):
             settings.append(None if s is None else {
@@ -1664,13 +1635,35 @@ class SkinStudio:
         top = {"knobs": dict(st.get("knobs", {})), "waveform": st.get("waveform", "square"),
                "scale": st.get("scale", "1/16"), "playmode": st.get("playmode", "Forward"),
                "preset": st.get("preset")}
+        # Reject malformed settings before replacing a live session.
+        for conf in [top]+[x for x in settings if x is not None]:
+            if conf["scale"] not in SCALE_MAP or conf["playmode"] not in PLAYMODES or conf["waveform"] not in ("saw","square"):
+                raise ValueError("Invalid pattern settings (grid, playback direction or waveform).")
+            for key,value in conf["knobs"].items():
+                if key in KNOB_SPEC and not math.isfinite(float(value)):
+                    raise ValueError(f"Invalid knob value: {key}")
         cur = int(st.get("cur_bank", 0)) % N_BANKS
         if banks[cur] is not None and settings[cur] is None:
             settings[cur] = {k: top[k] for k in ("knobs", "waveform", "scale", "playmode")}
         for i in range(N_BANKS):
             if banks[i] is not None and not instr[i]:
                 instr[i] = {"kind": "tb303", "name": TB303_ID}     # v2: all TB-303
-        return {"banks": banks, "settings": settings, "instr": instr, "cur": cur, "top": top}
+        return {"banks": banks, "settings": settings, "instr": instr, "cur": cur, "top": top,
+                "classic":classic,"tracks":tracks,"profile":profile}
+
+    @staticmethod
+    def _factory_sample_fallback(name):
+        """Find a renamed factory sample only after all exact project paths fail."""
+        try:
+            with open(os.path.join(INSTRUMENTS_DIR, "factory_sample_aliases.json"), encoding="utf-8") as handle:
+                new_name = json.load(handle).get(name)
+            if isinstance(new_name, str) and new_name == os.path.basename(new_name):
+                path = os.path.join(INSTRUMENTS_DIR, new_name)
+                if os.path.isfile(path):
+                    return path
+        except (OSError, ValueError, AttributeError):
+            pass
+        return None
 
     def _resolve_instr(self, desc, project_path, warnings):
         """Instrument descriptor from a file -> instrument id usable here. A sample
@@ -1704,6 +1697,13 @@ class SkinStudio:
                 except Exception as e:
                     warnings.append(f"Sample “{fname}” could not be read ({e}): TB-303 used.")
                     return TB303_ID
+        alias = self._factory_sample_fallback(fname)
+        if alias is not None:
+            try:
+                return self._register_sample(alias, desc.get("base_freq"))
+            except Exception as error:
+                warnings.append(f"Cannot load factory sample {os.path.basename(alias)}: {error}")
+                return TB303_ID
         warnings.append(f"Sample “{fname}” not found: TB-303 used.\n"
                         f"   (put it in {INSTRUMENTS_DIR} and load the project again)")
         return TB303_ID
@@ -1723,11 +1723,15 @@ class SkinStudio:
 
     def _load_all(self, P, path):
         """Replace the open project with the whole file."""
-        was = self.playing
-        if was:
+        was = self._playing_internal_pattern()
+        if self.playing:
             self._stop()
         warnings = []
+        self._finish_gesture()
         self._apply_top(P["top"])
+        self.patterns=P["classic"][:]; self.tracks=P["tracks"][:]; self.profile=P["profile"]
+        self.track_no=self.bar_pos=0; self.editor="Grid"; self.face_track=False; self._tap_times=None
+        self.hist.past.clear(); self.hist.future.clear()
         self.banks = [None if b is None else [dict(s) for s in b] for b in P["banks"]]
         self.bank_settings = [None if s is None else dict(s) for s in P["settings"]]
         self.bank_instr = [self._resolve_instr(d, path, warnings) if d else TB303_ID
@@ -1738,15 +1742,17 @@ class SkinStudio:
             self._toggle_run()
         self._report(warnings)
 
+    @edit("Import patterns")
     def _import_patterns(self, P, mapping, path):
         """Copy patterns of the file into the open project: mapping = [(src, dst)]."""
-        was = self.playing
-        if was:
+        was = self._playing_internal_pattern()
+        if self.playing:
             self._stop()
         warnings = []
         self._freeze_bank()
         for src, dst in mapping:
             b = P["banks"][src]
+            self.patterns[dst]=P["classic"][src] or Pattern.from_grid(b)
             self.banks[dst] = ([dict(s) for s in b] if b is not None else
                                [{"note": None, "accent": False, "slide": False} for _ in range(16)])
             s = P["settings"][src]
@@ -1769,17 +1775,17 @@ class SkinStudio:
     def _save_project(self):
         self._freeze_bank()
         rows = [(i, self._summary(self.banks[i], self._instr_label(self.bank_instr[i])))
-                for i in range(N_BANKS)]
+                for i in range(N_BANKS) if self.banks[i] is not None]
         dlg = PatternDialog(self.root, "Save project", rows, "save")
         if dlg.result is None:
             return
         include = [src for src, _ in dlg.result]
         last = getattr(self, "_project_path", None)
         path = filedialog.asksaveasfilename(
-            title="Enregistrer le projet",
+            title="Save project",
             defaultextension=".tb303", initialdir=PROJECTS_DIR,
-            initialfile=os.path.basename(last) if last else "mon_projet.tb303",
-            filetypes=[("Projet TB-303", "*.tb303"), ("Tous les fichiers", "*.*")])
+            initialfile=os.path.basename(last) if last else "my_project.tb303",
+            filetypes=[("TB-303 project", "*.tb303"), ("All files", "*.*")])
         if not path:
             return
         try:
@@ -1796,9 +1802,9 @@ class SkinStudio:
 
     def _load_project(self):
         path = filedialog.askopenfilename(
-            title="Ouvrir un projet",
+            title="Open project",
             initialdir=PROJECTS_DIR,
-            filetypes=[("Projet TB-303", "*.tb303"), ("Tous les fichiers", "*.*")])
+            filetypes=[("TB-303 project", "*.tb303"), ("All files", "*.*")])
         if not path:
             return
         try:
@@ -1841,9 +1847,9 @@ class SkinStudio:
             messagebox.showerror(title, f"{self.IMPORT_SCRIPT} is missing from\n{HERE}", parent=self.root)
             return
         path = filedialog.askopenfilename(
-            title="Importer un pattern depuis un fichier audio",
+            title="Import a pattern from audio",
             filetypes=[("Audio", " ".join("*" + e for e in self.AUDIO_EXT)),
-                       ("Tous les fichiers", "*.*")])
+                       ("All files", "*.*")])
         if not path:
             return
         self._freeze_bank()
@@ -1855,7 +1861,7 @@ class SkinStudio:
         target, scale, start, bpm, drums = dlg.result
         fd, tmp = tempfile.mkstemp(prefix="tb303_import_", suffix=".tb303")
         os.close(fd)
-        cmd = [sys.executable, "-u", script, path, "-o", tmp, "--scale", scale]
+        cmd = [sys.executable, "-u", script, path, "-o", tmp, "--scale", scale, "--profile",self.profile]
         if drums:
             cmd.append("--mix")
         if start is not None:
@@ -1944,12 +1950,6 @@ class SkinStudio:
             except OSError:
                 pass
 
-    def _clear(self):
-        for s in self.steps:
-            s.update(note=None, accent=False, slide=False)
-        self.sel = 0
-        self._changed()
-
 
 class AudioImportDialog(tk.Toplevel):
     """Where an imported pattern goes, plus the hints the analysis may need.
@@ -1976,7 +1976,7 @@ class AudioImportDialog(tk.Toplevel):
             row=1, column=0, columnspan=3, sticky="w", pady=(4, 12))
 
         ttk.Label(body, text="Into pattern").grid(row=2, column=0, sticky="w", pady=3)
-        self.choices = [f"{i + 1}   {rows[i]}" for i in range(N_BANKS)]
+        self.choices = [f"{i + 1}   {slot_label(i)}   {rows[i]}" for i in range(N_BANKS)]
         empty = [i for i in range(N_BANKS) if rows[i].endswith("empty")]
         first = current if current in empty else (empty[0] if empty else current)
         self.target = tk.StringVar(value=self.choices[first])     # never overwrite by default
@@ -2054,7 +2054,7 @@ class AudioImportDialog(tk.Toplevel):
     def _accept(self):
         try:
             start = self._number(self.start.get(), 0, 3600, "Loop start")
-            bpm = self._number(self.bpm.get(), 60, 200, "Tempo")
+            bpm = self._number(self.bpm.get(), 40, 300, "Tempo")
         except ValueError as e:
             self.msg.configure(text=str(e))
             return
@@ -2065,7 +2065,7 @@ class AudioImportDialog(tk.Toplevel):
 class PatternDialog(tk.Toplevel):
     """Modal list of patterns, one tick box each.
 
-    mode "save": rows are the 8 patterns of the open project.
+    mode "save": rows are the patterns available in the open project.
     mode "load": rows are the patterns found in a file, each with a target slot.
 
     After it closes, .result is None if cancelled, otherwise the list of
@@ -2074,7 +2074,7 @@ class PatternDialog(tk.Toplevel):
     """
 
     HINT = {
-        "save": "Tick the patterns to save. Nothing ticked = save all 8.\n"
+        "save": "Tick the patterns to save. Leave all boxes unchecked to save the entire project (64 patterns and 7 tracks).\n"
                 "Each pattern keeps its number, its sound and its instrument.",
         "load": "Tick the patterns to import into the open project, and choose\n"
                 "where each one goes. Nothing ticked = load the whole project,\n"
@@ -2094,23 +2094,30 @@ class PatternDialog(tk.Toplevel):
         ttk.Label(body, text=self.HINT[mode], justify="left").grid(
             row=0, column=0, columnspan=5, sticky="w", pady=(0, 10))
 
+        viewport=tk.Canvas(body,height=min(280,max(38,len(rows)*33)),highlightthickness=0)
+        viewport.grid(row=1,column=0,columnspan=4,sticky="nsew")
+        scroll=ttk.Scrollbar(body,orient="vertical",command=viewport.yview)
+        scroll.grid(row=1,column=4,sticky="ns")
+        viewport.configure(yscrollcommand=scroll.set)
+        table=ttk.Frame(viewport); viewport.create_window(0,0,anchor="nw",window=table)
+        table.bind("<Configure>",lambda e:viewport.configure(scrollregion=viewport.bbox("all"),width=table.winfo_reqwidth()))
         self.ticks, self.targets, self.marks = [], [], []
-        slots = [str(i + 1) for i in range(N_BANKS)]
+        slots = [slot_label(i) for i in range(N_BANKS)]
         for r, (idx, summary) in enumerate(rows, start=1):
             v = tk.BooleanVar(value=False)
-            ttk.Checkbutton(body, text=f"Pattern {idx + 1}", variable=v,
+            ttk.Checkbutton(table, text=f"{slot_label(idx)}  (#{idx + 1})", variable=v,
                             command=self._update).grid(row=r, column=0, sticky="w", pady=2)
-            ttk.Label(body, text=summary, foreground="#555").grid(
+            ttk.Label(table, text=summary, foreground="#555").grid(
                 row=r, column=1, sticky="w", padx=(10, 16))
             self.ticks.append(v)
             if mode == "load":
-                ttk.Label(body, text="→ pattern").grid(row=r, column=2, sticky="e")
-                t = tk.StringVar(value=str(idx + 1))
-                cb = ttk.Combobox(body, textvariable=t, values=slots, width=3, state="readonly")
+                ttk.Label(table, text="→ pattern").grid(row=r, column=2, sticky="e")
+                t = tk.StringVar(value=slot_label(idx))
+                cb = ttk.Combobox(table, textvariable=t, values=slots, width=6, state="readonly")
                 cb.grid(row=r, column=3, padx=(4, 8))
                 cb.bind("<<ComboboxSelected>>", lambda e: self._update())
                 self.targets.append(t)
-                m = ttk.Label(body, text="", width=22)
+                m = ttk.Label(table, text="", width=22)
                 m.grid(row=r, column=4, sticky="w")
                 self.marks.append(m)
 
@@ -2152,7 +2159,7 @@ class PatternDialog(tk.Toplevel):
         for k, v in enumerate(self.ticks):
             if v.get():
                 src = self.rows[k][0]
-                dst = int(self.targets[k].get()) - 1 if self.mode == "load" else src
+                dst = [slot_label(i) for i in range(N_BANKS)].index(self.targets[k].get()) if self.mode == "load" else src
                 out.append((src, dst))
         return out
 
@@ -2161,14 +2168,14 @@ class PatternDialog(tk.Toplevel):
         n = len(pairs)
         problem = ""
         if self.mode == "save":
-            label = "Save all 8 patterns…" if n == 0 else \
-                f"Save {n} pattern{'s' if n > 1 else ''}…"
+            label = "Save entire project..." if n == 0 else \
+                f"Save {n} pattern{'s' if n > 1 else ''}..."
         else:
             label = "Load all (replaces the open project)" if n == 0 else \
                 f"Import {n} pattern{'s' if n > 1 else ''}"
             dsts = [d for _, d in pairs]
             for k, v in enumerate(self.ticks):
-                d = int(self.targets[k].get()) - 1
+                d = [slot_label(i) for i in range(N_BANKS)].index(self.targets[k].get())
                 if not v.get():
                     self.marks[k].configure(text="")
                 elif dsts.count(d) > 1:
@@ -2273,9 +2280,10 @@ def main():
     if not os.path.exists(image):
         root.withdraw()
         messagebox.showerror("TB-303 Studio", f"Skin image not found:\n{image}")
-        raise SystemExit(f"Image introuvable : {image}")
+        raise SystemExit(f"Image not found: {image}")
     try:
         app = SkinStudio(root, image)
+        if "--roland-panel" in sys.argv:app.show_panel("roland")
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -2292,7 +2300,7 @@ def main():
     if "--nomidi" not in sys.argv:
         try:
             import midi_in
-            app.midi = midi_in.attach(app)
+            app.midi = midi_in.attach(app,port_name=next((v.split("=",1)[1] for v in sys.argv if v.startswith("--midi-port=")),None))
         except (Exception, SystemExit) as e:        # midi_in exits when mido is missing
             print(f"MIDI off ({e}) — mouse only")
 

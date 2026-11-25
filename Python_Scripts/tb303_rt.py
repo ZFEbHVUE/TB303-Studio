@@ -17,6 +17,7 @@ import math
 import threading
 import os
 import numpy as np
+from classic_voice import classic_block
 
 # WSL/WSLg: route audio to PulseAudio without having to export the variable by hand
 if os.path.exists("/mnt/wslg/PulseServer"):
@@ -29,7 +30,7 @@ except Exception:                     # fallback: works but may glitch
     _HAS_NUMBA = False
     def njit(*a, **k):
         def deco(f): return f
-        return (deco if (a and callable(a[0])) is False else a[0])
+        return a[0] if a and callable(a[0]) else deco
 
 # indices of the shared parameters (written by the GUI, read by the callback)
 P_CUTOFF, P_RESO, P_ENVMOD, P_DECAY, P_ACCENT, P_BPM = 0, 1, 2, 3, 4, 5
@@ -40,7 +41,7 @@ NPARAMS = 14
 S_PHASE, S_S1, S_S2, S_S3, S_S4, S_FENV, S_AENV = 0, 1, 2, 3, 4, 5, 6
 S_FREQ, S_STEP, S_SIS, S_GATE, S_ACC, S_PREVSL, S_INIT, S_GLIDE = 7, 8, 9, 10, 11, 12, 13, 14
 S_PREVF, S_PREVN = 15, 16          # note audition (frequency, samples remaining)
-NSTATE = 18
+NSTATE = 22
 
 
 @njit(cache=True, fastmath=True)
@@ -129,7 +130,9 @@ def synth_block(out, frames, st, pr, pat_f, pat_a, pat_s, nsteps, sr):
             else:
                 step = 0; sis = 0.0; init = 1.0
             f = pat_f[step]
-            if f <= 0.0:                       # rest
+            if f == -2.:                       # tie: preserve current gate and envelope
+                pass
+            elif f <= 0.0:                       # rest
                 gate = 0.0
             else:
                 tgt = f * tun
@@ -141,13 +144,14 @@ def synth_block(out, frames, st, pr, pat_f, pat_a, pat_s, nsteps, sr):
                     fenv = 1.0                 # re-trigger the filter envelope
                 gate = 1.0
                 acc = pat_a[step]
-            prevsl = pat_s[step]
+            if f != -2.:
+                prevsl = pat_s[step] if f > 0. else 0.
 
         # portamento
         freq += (glide_t - freq) * glide
 
         # gate (note length; slide = legato across the whole step)
-        gate_samps = sd if prevsl > 0.5 else gate_len * sd
+        gate_samps = sd if prevsl > 0.5 or pat_f[step+1 if step+1 < len(pat_f) else 0] == -2. else gate_len * sd
         g_on = 1.0 if (gate > 0.5 and sis < gate_samps) else 0.0
 
         # --- PolyBLEP oscillator ---
@@ -229,7 +233,8 @@ class RealtimeEngine:
         self.blocksize = blocksize
         self.params = np.zeros(NPARAMS, dtype=np.float64)
         self.state = np.zeros(NSTATE, dtype=np.float64)
-        self.pat_f = np.full(64, -1.0)
+        self.profile = "legacy"
+        self.pat_f = np.full(65, -1.0)
         self.pat_a = np.zeros(64)
         self.pat_s = np.zeros(64)
         self.nsteps = 16
@@ -260,40 +265,57 @@ class RealtimeEngine:
 
     def set_pattern(self, steps, tuning=None):
         """steps: list of strings ('C2', 'C2+', 'C2~', '.') or (note, acc, slide) tuples."""
-        tun = self.params[P_TUNING] if tuning is None else tuning
+        from tb303 import parse_step as unpack
         with self._lock:
             self.nsteps = max(1, min(64, len(steps)))
-            for i in range(64):
-                if i < len(steps):
-                    s = steps[i]
-                    note, acc, sld = parse_step(s) if isinstance(s, str) else s
-                    self.pat_f[i] = note_to_freq(note, 440.0) if note else -1.0
-                    self.pat_a[i] = 1.0 if acc else 0.0
-                    self.pat_s[i] = 1.0 if sld else 0.0
-                else:
-                    self.pat_f[i] = -1.0; self.pat_a[i] = 0.0; self.pat_s[i] = 0.0
+            for i in range(self.nsteps):
+                item = steps[i] if i < len(steps) else "."
+                d = unpack(item) if isinstance(item, (str, dict)) else dict(zip(("note","accent","slide","tie"),item))
+                self.pat_f[i] = -2. if d.get("tie") else (note_to_freq(d["note"],440.) if d["note"] else -1.)
+                self.pat_a[i] = float(d["accent"])
+                self.pat_s[i] = float(d["slide"])
+            self.pat_f[self.nsteps] = self.pat_f[0]
+            self.state[S_STEP] = min(self.state[S_STEP], self.nsteps-1)
+
+    def set_profile(self, profile):
+        if profile not in ("legacy","classic"):
+            raise ValueError("Unknown voice profile")
+        if profile != self.profile:
+            with self._lock:
+                self.profile = profile
+                self.params[P_GATE] = .5 if profile=="classic" else .55
+                self.state[:] = 0.
+
+    def process(self, out):
+        kernel = classic_block if self.profile == "classic" else synth_block
+        kernel(out, len(out), self.state, self.params, self.pat_f, self.pat_a,
+               self.pat_s, self.nsteps, float(self.sr))
 
     def set_playing(self, on):
+        if on and self.profile == "classic":
+            self.state[:] = 0.
         if on:
             self.state[S_INIT] = 0.0            # restart at step 0
         self.set_param("playing", 1 if on else 0)
 
     def preview(self, note, dur=0.45):
         """Play a one-shot note (audition on keyboard click), even while stopped."""
+        if self.profile=="classic" and self.params[P_PLAY]>.5: return
         f = note_to_freq(note, 440.0) * (self.params[P_TUNING] / 440.0) if note else 0.0
         if f > 0.0:
+            if self.profile == "classic":
+                self.state[:] = 0.
+                self.state[21] = dur * self.sr
             self.state[S_PREVF] = f
             self.state[S_FENV] = 1.0
             self.state[S_PREVN] = dur * self.sr
 
     def _callback(self, outdata, frames, time_info, status):
-        if not _ready.is_set():                  # still compiling (warm_up)
-            outdata.fill(0)
-            return
         buf = np.empty(frames, dtype=np.float64)
         with self._lock:
-            synth_block(buf, frames, self.state, self.params,
-                        self.pat_f, self.pat_a, self.pat_s, self.nsteps, float(self.sr))
+            song=getattr(self,"track_source",None)
+            if song is not None: song.fill(buf)
+            else: self.process(buf)
         np.clip(buf, -1.0, 1.0, out=buf)
         peak = float(np.abs(buf).max())
         self.level = peak if peak > self.level else self.level * 0.82   # fast rise, slow fall
@@ -311,8 +333,7 @@ class RealtimeEngine:
 
     def start(self):
         import sounddevice as sd
-        if not _ready.is_set():
-            threading.Thread(target=warm_up, name="tb303_rt warm-up", daemon=True).start()
+        warm_up()                                # compile here, never in the callback
         if self.stream is None:
             stream = sd.OutputStream(samplerate=self.sr, channels=2,
                                      blocksize=self.blocksize, dtype="float32",
@@ -333,21 +354,22 @@ class RealtimeEngine:
                 stream.close()
 
 
-# Numba compiles synth_block on its first call. Done inside the audio callback, that
-# took seconds with the engine lock held: the studio, waiting for that lock, froze.
+# Numba compiles a kernel on its first call. Done inside the audio callback, that took
+# seconds with the engine lock held: the studio, waiting for that lock, froze. start()
+# compiles both voices first (Pattern Play and a profile change can use either).
 _ready = threading.Event()
 _warming = threading.Lock()
 
 
 def warm_up():
-    """Compile the DSP now, outside the audio thread (the callback stays silent until
-    then). Safe to call from any thread, more than once."""
+    """Compile both voices now, before any callback needs them (then from Numba's cache:
+    a fraction of a second). Safe to call from any thread, more than once."""
     with _warming:
         if not _ready.is_set():
             e = RealtimeEngine()
-            buf = np.zeros(e.blocksize)
-            synth_block(buf, len(buf), e.state, e.params, e.pat_f, e.pat_a, e.pat_s,
-                        e.nsteps, float(e.sr))
+            for kernel in (synth_block, classic_block):
+                kernel(np.empty(0), 0, e.state, e.params, e.pat_f, e.pat_a, e.pat_s,
+                       e.nsteps, float(e.sr))
             _ready.set()
 
 

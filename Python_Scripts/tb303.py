@@ -14,6 +14,7 @@ Example: python tb303.py   ->  tb303_demo.wav
 """
 
 import re
+import os
 import wave
 import math
 import random
@@ -30,7 +31,7 @@ def note_to_freq(name, tuning=440.0):
 def name_to_midi(name):
     m = re.match(r"^([A-Ga-g])([#b]?)(-?\d+)$", name.strip())
     if not m:
-        raise ValueError(f"note invalide : {name!r}")
+        raise ValueError(f"Invalid note: {name!r}")
     letter, acc, octv = m.group(1).upper(), m.group(2), int(m.group(3))
     semi = NOTE_OFFSETS[letter] + (1 if acc == "#" else -1 if acc == "b" else 0)
     return (octv + 1) * 12 + semi
@@ -44,9 +45,12 @@ def midi_to_name(midi):
 def parse_step(s):
     if isinstance(s, dict):
         return {"note": s.get("note"), "accent": bool(s.get("accent")),
-                "slide": bool(s.get("slide"))}
+                "slide": bool(s.get("slide")), **({"tie": True} if s.get("tie") else {}),
+                **({"on": True} if s.get("on") else {})}
     s = str(s).strip()
-    if s in (".", "", "-", "r", "R"):
+    if s in ("=", "tie"):
+        return {"note": None, "accent": False, "slide": False, "tie": True}
+    if s in (".", "", "-", "r", "R", "rest"):
         return {"note": None, "accent": False, "slide": False}
     return {"note": s.replace("+", "").replace("~", ""),
             "accent": "+" in s, "slide": "~" in s}
@@ -224,7 +228,7 @@ class TB303:
             audio = audio / m * peak
         data = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
         ch = 2 if audio.ndim == 2 else 1
-        with wave.open(path, "w") as w:
+        with wave.open(os.fspath(path) if isinstance(path,os.PathLike) else path, "wb") as w:
             w.setnchannels(ch)
             w.setsampwidth(2)
             w.setframerate(self.sr)

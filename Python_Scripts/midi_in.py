@@ -59,7 +59,7 @@ import time
 try:
     import mido
 except ImportError:                                  # pragma: no cover
-    raise SystemExit("mido is missing:  pip install mido python-rtmidi")
+    mido=None
 
 
 # ===========================================================================
@@ -228,6 +228,7 @@ class MidiBridge:
 
     @staticmethod
     def _pick_port(want):
+        if mido is None: return None
         names = mido.get_input_names()
         if not names:
             return None
@@ -247,6 +248,9 @@ class MidiBridge:
 
     def _on_midi(self, msg):
         """rtmidi thread. Does nothing but enqueue -- see the note at the top."""
+        if msg.type in ("clock","start","continue","stop"):
+            self.app.midi_clock.feed(msg.type)
+            return
         if msg.type in ("note_on", "note_off", "control_change", "pitchwheel"):
             if len(self.q) == self.q.maxlen:
                 self._dropped += 1
@@ -298,12 +302,13 @@ class MidiBridge:
             cv, S = self.app.cv, self.app.S
             play = self.mode == "play"
             text = "MIDI ▸ PLAY" if play else "MIDI ● WRITE"
-            drawn = (text, S(BADGE_XY[0]), S(BADGE_XY[1]))
+            xy = (S(BADGE_XY[0]), S(getattr(self.app,"M",{}).get("status",BADGE_XY)[1]))
+            drawn = (text, *xy)
             if drawn == getattr(self, "_badge", None) and cv.find_withtag("midi"):
                 return
             cv.delete("midi")
             cv.create_text(
-                S(BADGE_XY[0]), S(BADGE_XY[1]), anchor="e", text=text,
+                *xy, anchor="e", text=text,
                 fill=("#8fd4a0" if play else "#ffcf6b"),
                 font=("Georgia", max(8, int(S(11))), "bold"), tags="midi")
             self._badge = drawn
@@ -344,13 +349,14 @@ class MidiBridge:
     def _set_knob(self, name, frac):
         """frac is 0..1; map it onto the parameter's own range and push audio."""
         lo, hi, _, _ = self.KNOB_SPEC[name]
-        value = lo + frac * (hi - lo)
+        value = 440*2**((frac-.5)*14/12) if name=="tuning" else lo + frac * (hi - lo)
         if name == "tuning" and abs(value - 440.0) <= TUNING_SNAP:
             value = 440.0                           # no detent on a pot: snap
         elif name == "bpm":
             value = float(round(value))             # whole BPM, as displayed
         if value == self.app.kv[name]:
             return                                  # nothing changed: no push
+        self.app._begin_gesture(name,delayed=True)
         self.app.kv[name] = value
         self.app._knob_live(name)                   # engine first, redraw coalesced
         if LOG_ACTIONS:
@@ -382,10 +388,7 @@ class MidiBridge:
 
         # Flags go on the step BEFORE _set_note, which writes the note, previews
         # it, then advances the cursor.
-        step = self.app.steps[self.app.sel]
-        step["accent"] = accent
-        step["slide"] = slide
-        self.app._set_note(note)
+        self.app._set_note(note,accent=accent,slide=False,legato_from=slide)
         if LOG_ACTIONS:
             tags = ("+" if accent else "") + ("~" if slide else "")
             self._log(f"write {note}{tags}  (vel {m.velocity})")
@@ -396,7 +399,8 @@ class MidiBridge:
         if not (PAD_FIRST <= note < PAD_FIRST + 16):
             return
         b = (note - PAD_FIRST) % 8                  # bank A and B alike
-        self.app._switch_bank(b)
+        section=self.app._selector_slot() if hasattr(self.app,"_selector_slot") else self.app.cur_bank
+        self.app._switch_bank((section//8)*8+b)
         self._draw_badge()
         if LOG_ACTIONS:
             self._log(f"pattern {b + 1}")
@@ -410,20 +414,20 @@ class MidiBridge:
             self.held.clear()
             self._log(f"keys = {self.mode.upper()}")
         elif act == "prev_step":
-            a.sel = (a.sel - 1) % N_STEPS
-            a.refresh()
+            a.navigate(-1)
         elif act == "next_step":
-            a.sel = (a.sel + 1) % N_STEPS
-            a.refresh()
+            a.navigate(1)
         elif act == "shuffle_next":
+            a._begin_gesture("shuffle",delayed=True)
             a.kv["shuffle"] = next_shuffle(a.kv["shuffle"])
             a._knob_live("shuffle")
             self._log(f"shuffle = {a.kv['shuffle']:.2f}")
         elif act in ("wave_saw", "wave_square"):
             wave = act[5:]
             if a.waveform != wave:
-                a.waveform = wave
-                a._changed()
+                with a._editing("Waveform"):
+                    a.waveform = wave
+                    a._changed()
             self._log(f"waveform = {wave}")
         elif act in ("rest", "run", "stop"):
             a._button(act)

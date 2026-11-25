@@ -59,7 +59,8 @@ def _load_wav_builtin(path, sr=SR):
     """Read a WAV of any common depth (8/16/24/32-bit PCM or float32) as mono float.
     Used as the no-dependency fallback; the stdlib wave module cannot read 24-bit."""
     import struct
-    b = open(path, "rb").read()
+    with open(path, "rb") as source:
+        b = source.read()
     if b[:4] != b"RIFF" or b[8:12] != b"WAVE":
         raise ValueError("not a WAV file")
     fmt = ch = fr = bits = None
@@ -376,7 +377,7 @@ def render_pattern(steps, voice, bpm=130, subdiv=4, swing=0.0, play_mode="forwar
         return np.zeros((0, 2))
     step = 60.0 / bpm / max(subdiv, 1)
     swing = max(0.0, min(0.66, swing))
-    total = int(len(seq) * step * sr) + sr
+    total = int(sum(step*(1+swing if i%2==0 else 1-swing) for i in range(len(seq))) * sr) + sr
     buf = np.zeros(total)
     pos = 0.0
     for i, st in enumerate(seq):
@@ -385,6 +386,15 @@ def render_pattern(steps, voice, bpm=130, subdiv=4, swing=0.0, play_mode="forwar
             f = note_to_freq(st["note"], tuning)
             acc = st.get("accent", False)
             dur = sd * (1.0 if st.get("slide") else gate_len) + 0.02
+            j=i+1
+            if j<len(seq) and seq[j].get("tie"):
+                dur=sd
+                while j<len(seq) and seq[j].get("tie"):
+                    hold=step*(1+swing if j%2==0 else 1-swing)
+                    last=j+1>=len(seq) or not seq[j+1].get("tie")
+                    dur+=hold*(gate_len if last and not st.get("slide") else 1.)
+                    j+=1
+                dur+=.02
             note = voice(f, dur, acc)
             note = _reso_filter(note, cutoff, resonance, env_mod, decay, distortion, acc, sr)
             a = int(pos * sr)

@@ -32,7 +32,7 @@ APPS_DIR = os.path.join(os.path.expanduser("~"), ".local", "share", "application
 
 
 def desktop_dir():
-    """The desktop folder in the user's language (~/Bureau in French)."""
+    """Find the desktop directory configured by the operating system."""
     try:
         out = subprocess.run(["xdg-user-dir", "DESKTOP"], capture_output=True,
                              text=True, timeout=5).stdout.strip()
@@ -40,11 +40,21 @@ def desktop_dir():
             return out
     except (OSError, subprocess.SubprocessError):
         pass
-    for name in ("Desktop", "Bureau"):
-        p = os.path.join(os.path.expanduser("~"), name)
-        if os.path.isdir(p):
-            return p
-    return None
+    # Minimal environments may have an XDG configuration but no xdg-user-dir tool.
+    home = os.path.expanduser("~")
+    config_dir = os.environ.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+    try:
+        with open(os.path.join(config_dir, "user-dirs.dirs"), encoding="utf-8") as config:
+            for line in config:
+                key, sep, raw = line.strip().partition("=")
+                if sep and key == "XDG_DESKTOP_DIR":
+                    dest = raw.strip().strip('"').replace("$HOME", home)
+                    if os.path.isabs(dest) and os.path.isdir(dest):
+                        return None if os.path.abspath(dest) == home else dest
+    except OSError:
+        pass
+    fallback = os.path.join(home, "Desktop")
+    return fallback if os.path.isdir(fallback) else None
 
 
 def quote(arg):
