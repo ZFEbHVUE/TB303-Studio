@@ -49,6 +49,39 @@ packages is under [Requirements](#requirements-and-installation), and
 
 ---
 
+## Ready-to-run versions (Windows, Linux)
+
+Nothing to install: download `TB303-Studio-windows-x64.zip` or `TB303-Studio-linux-x64.zip`
+from the [Releases](https://github.com/ZFEbHVUE/tb303-studio/releases) page and unzip it.
+
+- **Windows**: open the `TB303-Studio` folder and double-click `TB303-Studio.exe`. The
+  program is not signed: if Windows shows *Windows protected your PC*, click
+  *More info*, then *Run anyway*.
+- **Linux** (Ubuntu 22.04 or later): run `TB303-Studio/TB303-Studio`. PortAudio comes
+  with it; the system's copy is used when installed.
+
+Keep the folder together: projects are saved in its `Projects` folder, samples in
+`Instruments`, and messages in `tb303_studio.log`. The first launch prepares the voices
+(a few seconds; they are kept in your user cache folder, so later launches start at
+once). MIDI works as with Python, and *Import pattern from audio* reads WAV, FLAC, OGG
+and MP3 (other formats need `ffmpeg` on the PATH).
+
+GitHub builds both versions from this repository with
+[`.github/workflows/executables.yml`](.github/workflows/executables.yml): pushing a tag
+such as `v3.2` publishes them as a release; a push that changes the code, or
+*Actions → Executables → Run workflow*, builds them without one (download them from the
+run's page). Each build passes its self-test first: libraries, folders, voices, an
+import of a known line through the program, and the window. To build one yourself on
+Linux or Windows:
+
+```bash
+python3 -m pip install -r requirements-build.txt
+pyinstaller --noconfirm TB303-Studio.spec
+dist/TB303-Studio/TB303-Studio --self-test
+```
+
+---
+
 ## What's in the folder
 
 ```
@@ -60,7 +93,9 @@ tb303-studio/
 ├── Projects/          .tb303 projects (a few examples included)
 ├── Instruments/       your sample library (created on first launch)
 ├── Audio_Demos/       short WAV examples used by the guides
-└── Tests/             automated tests: python3 -m unittest discover -s Tests
+├── Tests/             automated tests: python3 -m unittest discover -s Tests
+├── TB303-Studio.spec  how the executables are built (PyInstaller)
+└── requirements-build.txt, .github/workflows/executables.yml   their libraries and build
 ```
 
 | File in `Python_Scripts/` | Role |
@@ -76,6 +111,7 @@ tb303-studio/
 | `classic_*.py`, `live_*.py`, `roland_*.py` and the face modules | The Classic voice and sequencer, Pattern Play, live recording and the Roland photo panel: see [CLASSIC-GUIDE.md](CLASSIC-GUIDE.md) and [ROLAND-PANEL.md](ROLAND-PANEL.md). |
 | `studio_file_dialog.py` | The file chooser: sizes, dates, search, favorites and a *Preview* button for audio files. |
 | `install_launcher.py` | Creates the desktop icon and the applications-menu entry. |
+| `standalone_main.py` | Entry point of the executables: the studio, the audio import run by the program itself (`--import-audio`), and `--self-test`. |
 | `tb303_studio-v1.0.py` | The first version, kept for reference. Start it with the skin as argument: `python3 Python_Scripts/tb303_studio-v1.0.py docs/tb303_skin.png`. |
 
 The steampunk skin is `docs/tb303_skin.png`, the others are in `doc/skin/`, and the icon
@@ -510,5 +546,9 @@ that env.
 - The file chooser is shared with my **XTTS Voice Studio** project.
 - MPK mini Plus photo: my own unit.
 
-The project code is released under the MIT License (see `LICENSE`). The optional photo view displays the supplied photograph, including the original panel markings. Roland and TB-303 are trademarks of Roland Corporation; Akai Professional and MPK
+The project code is released under the MIT License (see `LICENSE`). The executables
+also contain Python and the libraries the studio uses, each under its own license:
+NumPy, SciPy, Numba/llvmlite, Pillow, mido, python-rtmidi, PortAudio and Tcl/Tk
+(permissive licenses), pygame and libsndfile (LGPL, kept as separate libraries in
+`_internal`). The optional photo view displays the supplied photograph, including the original panel markings. Roland and TB-303 are trademarks of Roland Corporation; Akai Professional and MPK
 mini are trademarks of inMusic Brands. This project is not affiliated with either.

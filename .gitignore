@@ -8,3 +8,5 @@ tb303-old.py
 !Projects/**
 !Audio_Demos/*.wav
 !Musics/*.wav
+/build/
+/dist/

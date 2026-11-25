@@ -152,8 +152,14 @@ SKINS = {
 #            Instruments/      samples used by the projects
 #            doc/skin/         Art Controls skins
 # The script also still runs from the old flat layout (everything in one folder).
-HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.dirname(HERE) if os.path.basename(HERE) == "Python_Scripts" else HERE
+# The stand-alone executable (TB303-Studio.spec) takes the place of Python_Scripts/:
+# the folders sit next to the program.
+FROZEN = getattr(sys, "frozen", False)
+if FROZEN:
+    HERE = ROOT = os.path.dirname(os.path.abspath(sys.executable))
+else:
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    ROOT = os.path.dirname(HERE) if os.path.basename(HERE) == "Python_Scripts" else HERE
 PROJECTS_DIR = os.path.join(ROOT, "Projects")
 INSTRUMENTS_DIR = os.path.join(ROOT, "Instruments")
 DOC_DIR = os.path.join(ROOT, "doc")
@@ -448,7 +454,8 @@ class SkinStudio(ClassicControls):
         messagebox.showinfo("Active Skin", f"Front Panel Mk III.2 · {label}{edition}\n\n"
                             f"Panel image\n{os.path.realpath(path)}\n\n"
                             f"Inlaid control surface\n{str(FACE_ART / self._skin) if self._skin != 'custom' else 'Built from custom artwork'}\n\n"
-                            f"Studio script\n{os.path.realpath(__file__)}",
+                            + (f"Studio program\n{os.path.realpath(sys.executable)}" if FROZEN
+                               else f"Studio script\n{os.path.realpath(__file__)}"),
                             parent=self.root)
 
     def S(self, v):
@@ -1837,13 +1844,14 @@ class SkinStudio(ClassicControls):
     def _import_audio(self):
         """Turn a recorded bass line into a pattern (notes, accents, slides, sound).
         audio_to_tb303.py does the work in its own process, so the studio stays
-        usable; its messages scroll in the status line."""
+        usable; its messages scroll in the status line. The executable has no
+        Python to run the script with: it runs the import itself (--import-audio)."""
         title = "Import pattern from audio"
         if getattr(self, "_import", None) is not None:
             messagebox.showinfo(title, "An import is already running.", parent=self.root)
             return
         script = os.path.join(HERE, self.IMPORT_SCRIPT)
-        if not os.path.isfile(script):
+        if not FROZEN and not os.path.isfile(script):
             messagebox.showerror(title, f"{self.IMPORT_SCRIPT} is missing from\n{HERE}", parent=self.root)
             return
         path = filedialog.askopenfilename(
@@ -1861,7 +1869,8 @@ class SkinStudio(ClassicControls):
         target, scale, start, bpm, drums = dlg.result
         fd, tmp = tempfile.mkstemp(prefix="tb303_import_", suffix=".tb303")
         os.close(fd)
-        cmd = [sys.executable, "-u", script, path, "-o", tmp, "--scale", scale, "--profile",self.profile]
+        cmd = [sys.executable] + (["--import-audio"] if FROZEN else ["-u", script])
+        cmd += [path, "-o", tmp, "--scale", scale, "--profile", self.profile]
         if drums:
             cmd.append("--mix")
         if start is not None:
@@ -1869,8 +1878,12 @@ class SkinStudio(ClassicControls):
         if bpm is not None:
             cmd += ["--bpm", f"{bpm:g}"]
         try:
+            # UTF-8 both ways: a Windows pipe would otherwise use the ANSI code page,
+            # which cannot write every file name the analysis prints.
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    text=True, bufsize=1, cwd=HERE)
+                                    encoding="utf-8", errors="replace", bufsize=1, cwd=HERE,
+                                    env=dict(os.environ, PYTHONIOENCODING="utf-8"),
+                                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         except OSError as e:
             os.remove(tmp)
             messagebox.showerror(title, f"Cannot start the analysis:\n{e}", parent=self.root)

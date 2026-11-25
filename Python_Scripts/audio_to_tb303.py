@@ -628,11 +628,12 @@ def load_engine(folder, profile="legacy"):
         folder = folder.resolve()
         if (folder / "Python_Scripts").is_dir():
             folder = folder / "Python_Scripts"
-    else:
+    elif not getattr(sys, "frozen", False):      # the executable has the engine built in
         folder = Path(__file__).resolve().parent
-    if not (folder / "tb303_rt.py").is_file():
-        raise ValueError("put this script in Python_Scripts, or give the studio folder with --studio.")
-    sys.path.insert(0, str(folder))
+    if folder is not None:
+        if not (folder / "tb303_rt.py").is_file():
+            raise ValueError("put this script in Python_Scripts, or give the studio folder with --studio.")
+        sys.path.insert(0, str(folder))
     try:
         import numba  # noqa: F401
     except ImportError as exc:

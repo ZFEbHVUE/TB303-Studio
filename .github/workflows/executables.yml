@@ -1,0 +1,126 @@
+# Stand-alone TB-303 Studio for Linux and Windows (TB303-Studio.spec).
+# Each build is checked with its --self-test, then:
+#   - a push that changes the code, or Actions tab > "Run workflow": the two zips
+#     are on the run's page for 30 days
+#   - a pushed tag v* (git tag v3.2 && git push origin v3.2): they are attached
+#     to a GitHub Release of that name (Releases, on the repository's page)
+name: Executables
+
+on:
+  push:
+    branches: [main]
+    paths:                         # not checked for tags: a tag always builds
+      - "Python_Scripts/**"
+      - "TB303-Studio.spec"
+      - "requirements-build.txt"
+      - ".github/workflows/executables.yml"
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest Ubuntu still offered: the Linux build runs on Ubuntu 22.04
+          # and later (glibc 2.35). GitHub retires this image in April 2027.
+          - os: ubuntu-22.04
+            zip: TB303-Studio-linux-x64.zip
+          - os: windows-latest
+            zip: TB303-Studio-windows-x64.zip
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Linux packages (PortAudio to ship, virtual screen for the test)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libportaudio2 xvfb
+
+      - name: Python libraries
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-build.txt
+
+      - name: Build
+        run: pyinstaller --noconfirm TB303-Studio.spec
+
+      - name: Self-test (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          xvfb-run -a dist/TB303-Studio/TB303-Studio --self-test
+          rm -f dist/TB303-Studio/self_test.log
+
+      - name: Self-test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\TB303-Studio\TB303-Studio.exe" -ArgumentList "--self-test" `
+               -PassThru -RedirectStandardOutput selftest_out.txt -RedirectStandardError selftest_err.txt
+          $null = $p.Handle          # keeps the exit code readable after the wait
+          $p.WaitForExit()
+          Get-Content selftest_out.txt, selftest_err.txt -ErrorAction SilentlyContinue
+          if ((Get-Item selftest_out.txt).Length -eq 0 -and (Test-Path "dist\TB303-Studio\self_test.log")) {
+            Get-Content "dist\TB303-Studio\self_test.log"
+          }
+          Remove-Item "dist\TB303-Studio\self_test.log" -ErrorAction SilentlyContinue
+          exit $p.ExitCode
+
+      - name: Zip (Linux)
+        if: runner.os == 'Linux'
+        run: cd dist && zip -qr "../${{ matrix.zip }}" TB303-Studio
+
+      - name: Zip (Windows)
+        if: runner.os == 'Windows'
+        run: 7z a -tzip "${{ matrix.zip }}" .\dist\TB303-Studio
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.zip }}
+          path: ${{ matrix.zip }}
+          retention-days: 30
+          compression-level: 0
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<'EOF'
+          Stand-alone TB-303 Studio: no Python or conda to install.
+
+          **Windows**: unzip `TB303-Studio-windows-x64.zip`, open the `TB303-Studio` folder and
+          double-click `TB303-Studio.exe`. The program is not signed: if Windows shows
+          "Windows protected your PC", click *More info*, then *Run anyway*.
+
+          **Linux** (Ubuntu 22.04 or later): unzip `TB303-Studio-linux-x64.zip`, then run
+          `TB303-Studio/TB303-Studio`.
+
+          Keep the folder together: projects are saved in its `Projects` folder and samples in
+          `Instruments`. The first launch prepares the voices (a few seconds); later launches
+          start at once.
+          EOF
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload "$TAG" assets/*.zip --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" assets/*.zip --repo "$GITHUB_REPOSITORY" \
+              --title "TB-303 Studio $TAG" --notes-file notes.md
+          fi

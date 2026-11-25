@@ -95,12 +95,7 @@ class MixerOutputTap:
     def __init__(self, mixer, sample_rate, on_audio):
         if mixer.get_init() != (sample_rate, -16, 2):
             raise RuntimeError("Recording needs a stereo, signed 16-bit pygame mixer at 44.1 kHz.")
-        try:
-            # Resolve SDL_mixer through pygame's loaded extension. A separately
-            # loaded mixer library might have its own audio device and state.
-            self._set_post_mix = ctypes.CDLL(mixer.__file__).Mix_SetPostMix
-        except (AttributeError, OSError) as error:
-            raise RuntimeError("This pygame build does not expose its SDL_mixer output.") from error
+        self._set_post_mix = self._find_post_mix(mixer)
         self._set_post_mix.argtypes = (ctypes.c_void_p, ctypes.c_void_p)
         self._set_post_mix.restype = None
 
@@ -110,6 +105,22 @@ class MixerOutputTap:
 
         self._receive = receive
         self._set_post_mix(self._receive, None)
+
+    @staticmethod
+    def _find_post_mix(mixer):
+        """Mix_SetPostMix of the SDL_mixer pygame already uses: a separately loaded
+        mixer library might have its own audio device and state. On Linux the
+        extension's handle reaches it; a Windows DLL only shows its own exports, so
+        there the SDL2_mixer.dll next to the extension is opened (the copy in use)."""
+        candidates = [mixer.__file__]
+        if sys.platform == "win32":
+            candidates.append(os.path.join(os.path.dirname(mixer.__file__), "SDL2_mixer.dll"))
+        for path in candidates:
+            try:
+                return ctypes.CDLL(path).Mix_SetPostMix
+            except (AttributeError, OSError):
+                continue
+        raise RuntimeError("This pygame build does not expose its SDL_mixer output.")
 
     def close(self):
         self._set_post_mix(None, None)
