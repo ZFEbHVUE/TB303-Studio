@@ -36,8 +36,8 @@ pattern — and full control from an **Akai MPK mini Plus** MIDI keyboard.
 ## Quick start
 
 ```bash
-git clone https://github.com/ZFEbHVUE/tb303-studio.git
-cd tb303-studio
+git clone https://github.com/ZFEbHVUE/TB303-Studio.git
+cd TB303-Studio
 python3 -m pip install numpy pillow numba sounddevice mido python-rtmidi
 python3 Launch_TB303_MkIII.py
 ```
@@ -52,7 +52,7 @@ packages is under [Requirements](#requirements-and-installation), and
 ## Ready-to-run versions (Windows, Linux)
 
 Nothing to install: download `TB303-Studio-windows-x64.zip` or `TB303-Studio-linux-x64.zip`
-from the [Releases](https://github.com/ZFEbHVUE/tb303-studio/releases) page and unzip it.
+from the [Releases](https://github.com/ZFEbHVUE/TB303-Studio/releases) page and unzip it.
 
 - **Windows**: open the `TB303-Studio` folder and double-click `TB303-Studio.exe`. The
   program is not signed: if Windows shows *Windows protected your PC*, click
@@ -61,7 +61,8 @@ from the [Releases](https://github.com/ZFEbHVUE/tb303-studio/releases) page and 
   with it; the system's copy is used when installed.
 
 Keep the folder together: projects are saved in its `Projects` folder, samples in
-`Instruments`, and messages in `tb303_studio.log`. The first launch prepares the voices
+`Instruments`, and messages in `tb303_studio.log`; `licenses` holds the licenses of
+the libraries inside the program. The first launch prepares the voices
 (a few seconds; they are kept in your user cache folder, so later launches start at
 once). MIDI works as with Python, and *Import pattern from audio* reads WAV, FLAC, OGG
 and MP3 (other formats need `ffmpeg` on the PATH).
@@ -85,7 +86,7 @@ dist/TB303-Studio/TB303-Studio --self-test
 ## What's in the folder
 
 ```
-tb303-studio/
+TB303-Studio/
 ├── Launch_*.py        the launchers (Studio skins, or the Roland photo panel)
 ├── Python_Scripts/    all the Python code
 ├── docs/              images: the steampunk skin, the icon, screenshots, photos
@@ -542,7 +543,9 @@ that env.
 
 ## Credits
 
-- Synthesis, interfaces and code: **Stéphane "ZFEbHVUE"**.
+- Concept, specifications, testing and choices: **Stéphane "ZFEbHVUE"**.
+- Code written with AI assistants, **Claude** (Anthropic) and **ChatGPT** (OpenAI), from my
+  specifications, and tested on my own machines and recordings.
 - The file chooser is shared with my **XTTS Voice Studio** project.
 - MPK mini Plus photo: my own unit.
 
@@ -550,5 +553,5 @@ The project code is released under the MIT License (see `LICENSE`). The executab
 also contain Python and the libraries the studio uses, each under its own license:
 NumPy, SciPy, Numba/llvmlite, Pillow, mido, python-rtmidi, PortAudio and Tcl/Tk
 (permissive licenses), pygame and libsndfile (LGPL, kept as separate libraries in
-`_internal`). The optional photo view displays the supplied photograph, including the original panel markings. Roland and TB-303 are trademarks of Roland Corporation; Akai Professional and MPK
+`_internal`); their license texts are in the program's `licenses` folder. The optional photo view displays the supplied photograph, including the original panel markings. Roland and TB-303 are trademarks of Roland Corporation; Akai Professional and MPK
 mini are trademarks of inMusic Brands. This project is not affiliated with either.

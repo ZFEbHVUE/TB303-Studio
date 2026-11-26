@@ -7,7 +7,8 @@
 #
 # dist/TB303-Studio/ then holds the program, _internal/ (Python and the
 # libraries) and, copied by the end of this file, the folders the studio reads
-# next to it: doc/skin, docs (default skin and icon), Instruments, Projects.
+# next to it: doc/skin, docs (default skin and icon), Instruments, Projects, and
+# licenses/ (the licenses of the libraries inside).
 # .github/workflows/executables.yml runs this on Linux and Windows.
 import os
 import shutil
@@ -50,7 +51,7 @@ exe = EXE(                                             # noqa: F821
     exclude_binaries=True,
     name=NAME,
     console=False,                                     # Windows: no terminal window
-    icon=os.path.join(HERE, "docs", "tb303_icon.png"),
+    icon=os.path.join(HERE, "docs", "tb303_icon.ico"),  # used by Windows only
     upx=False,
 )
 coll = COLLECT(exe, a.binaries, a.datas, name=NAME, upx=False)  # noqa: F821
@@ -76,3 +77,80 @@ copy("Instruments")
 copy("Projects")
 for name in ("README.md", "CLASSIC-GUIDE.md", "ROLAND-PANEL.md", "LICENSE"):
     copy(name)
+
+
+# --- licenses of what the program contains (licenses/) ----------------------
+def collect_licenses():
+    import importlib.metadata
+    import re
+    import tkinter
+
+    root = os.path.join(dist, "licenses")
+    os.makedirs(root, exist_ok=True)
+    is_license = re.compile(r"(^|/)(LICEN[CS]E|COPYING|NOTICE)[^/]*$", re.I)
+    lines = ["Licenses of the software inside TB-303 Studio's executable.",
+             "TB-303 Studio itself: MIT License (../LICENSE).", ""]
+
+    def take(src, *dst):
+        if src and os.path.isfile(src):
+            target = os.path.join(root, *dst)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(src, target)
+            return True
+        return False
+
+    def license_name(meta):
+        if meta.get("License-Expression"):
+            return meta["License-Expression"]
+        classifiers = [c.split("::")[-1].strip() for c in meta.get_all("Classifier") or ()
+                       if c.startswith("License ::")]
+        if classifiers:
+            return ", ".join(classifiers)
+        text = (meta.get("License") or "").strip().splitlines()
+        return text[0][:60] if text else "see the license files"
+
+    for name in ("numpy", "scipy", "numba", "llvmlite", "pygame", "sounddevice", "soundfile",
+                 "pillow", "mido", "python-rtmidi", "packaging", "pyinstaller"):
+        try:
+            dist_info = importlib.metadata.distribution(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        found = [f for f in dist_info.files or () if is_license.search(str(f))]
+        for f in found:
+            take(str(dist_info.locate_file(f)), name, *str(f).split("/"))
+        kind = license_name(dist_info.metadata)
+        if name == "pyinstaller":     # only its loader is inside, under the exception of COPYING.txt
+            kind = "GPL 2 with an exception: the programs it builds may use any license"
+        lines.append(f"{name} {dist_info.version}: {kind}"
+                     + ("" if found else " (no license file in the package)"))
+    # pygame ships no license file: it is under the GNU LGPL 2.1
+    take(os.path.join(HERE, "licenses", "LGPL-2.1.txt"), "pygame", "LGPL-2.1.txt")
+    lines.append("pygame (with SDL, SDL_mixer): GNU LGPL 2.1, pygame/LGPL-2.1.txt; "
+                 "source at https://github.com/pygame/pygame")
+    lines.append("libsndfile (inside soundfile): GNU LGPL 2.1 or later, soundfile/_soundfile_data/COPYING")
+    # Python and Tcl/Tk
+    for candidate in (os.path.join(sys.base_prefix, "LICENSE.txt"),
+                      os.path.join(sys.base_prefix, "lib", f"python{sys.version_info[0]}.{sys.version_info[1]}",
+                                   "LICENSE.txt")):
+        if take(candidate, "python", "LICENSE.txt"):
+            lines.append(f"Python {sys.version.split()[0]}: PSF License, python/LICENSE.txt")
+            break
+    try:
+        tcl_dir = tkinter.Tcl().eval("info library")
+    except Exception:
+        tcl_dir = ""
+    tcl_found = [take(src, "tcl-tk", dst) for src, dst in (
+        (os.path.join(tcl_dir, "license.terms"), "license.terms"),                 # Windows Python
+        (os.path.join(os.path.dirname(tcl_dir), "license.terms"), "license.terms"),
+        ("/usr/share/doc/libtcl8.6/copyright", "tcl-copyright"),                   # Debian, Ubuntu
+        ("/usr/share/doc/libtk8.6/copyright", "tk-copyright"))]
+    if any(tcl_found):
+        lines.append("Tcl/Tk: BSD-style license, tcl-tk/")
+    if sys.platform.startswith("linux"):
+        if take("/usr/share/doc/libportaudio2/copyright", "portaudio", "copyright"):
+            lines.append("PortAudio: MIT License, portaudio/copyright")
+    with open(os.path.join(root, "README.txt"), "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+collect_licenses()

@@ -2,7 +2,7 @@
 
 For the separate **Roland TB-303 (photo)** view, see the [photographic panel guide](ROLAND-PANEL.md). The controls below describe the eleven Studio skins.
 
-Open a terminal in the studio's folder (**tb303-studio** when cloned from GitHub), and run `python3 Launch_TB303_MkIII.py` (Windows: `python Launch_TB303_MkIII.py`). Use the same Python environment as your previous installation. The window title reads **Front Panel Mk III.2**. Look for **BACK** and **REDO** just below the keyboard. The original sixteen step keys sit between the upper editing controls and the lower track and memory controls.
+Open a terminal in the studio's folder (**TB303-Studio** when cloned from GitHub), and run `python3 Launch_TB303_MkIII.py` (Windows: `python Launch_TB303_MkIII.py`). Use the same Python environment as your previous installation. The window title reads **Front Panel Mk III.2**. Look for **BACK** and **REDO** just below the keyboard. The original sixteen step keys sit between the upper editing controls and the lower track and memory controls.
 
 ![The Steampunk front panel in the running Studio](docs/Front_Panel_MkIII.png)
 

@@ -246,14 +246,15 @@ def self_test(gui=True):
             print(text, flush=True)
 
     say(f"TB-303 Studio self-test, {'executable' if FROZEN else 'sources'}: {sys.executable}")
-    _import_voices()
-    checks = [("libraries", _check_libraries), ("folders", _check_folders),
-              ("voices", _check_voices)]
+    checks = [("libraries", _check_libraries),
+              ("voice modules", lambda say: _import_voices()),     # before the studio imports them
+              ("folders", _check_folders), ("voices", _check_voices)]
     folder = tempfile.mkdtemp(prefix="tb303_selftest_")
     checks.append(("import", lambda say: _check_import(say, folder)))
     if gui:
         checks.append(("window", _check_window))
     failed = []
+    on_github = os.environ.get("GITHUB_ACTIONS") == "true"
     for name, check in checks:
         try:
             check(say)
@@ -262,6 +263,9 @@ def self_test(gui=True):
             say(f"FAILED {name}: {type(e).__name__}: {e}")
             for line in traceback.format_exc().splitlines():
                 say("    " + line)
+            if on_github:      # shown in the Annotations box of the run's page
+                text = f"{type(e).__name__}: {e}".replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+                say(f"::error title=Self-test {name} ({sys.platform})::{text}")
     say("SELF-TEST " + ("PASSED" if not failed else "FAILED: " + ", ".join(failed)))
     try:
         with open(log_path, "w", encoding="utf-8") as f:
@@ -277,7 +281,13 @@ def main():
     if args[:1] == ["--import-audio"]:
         run_import(args[1:])
     elif "--self-test" in args:
-        sys.exit(self_test(gui="--no-gui" not in args))
+        try:
+            code = self_test(gui="--no-gui" not in args)
+        except Exception:                 # an error dialog would hide it on a build machine
+            import traceback
+            traceback.print_exc(file=sys.stdout if sys.stdout is not None else None)
+            code = 2
+        sys.exit(code)
     else:
         _import_voices()
         import tb303_studio
